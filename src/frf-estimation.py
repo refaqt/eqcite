@@ -136,8 +136,9 @@ def parse_filename(filepath):
     filename = os.path.basename(filepath)
     
     # Pattern: yyyy-mm-dd_hh-mm-ss_X[x-position]_Y[y-position]_Z[z-position]_[direction].csv
+    # Make pattern case-insensitive to handle both .csv and .CSV extensions
     pattern = r'(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})_X([^_]+)_Y([^_]+)_Z([^_]+)_([xy])\.csv'
-    match = re.match(pattern, filename)
+    match = re.match(pattern, filename, re.IGNORECASE)
     
     if not match:
         raise ValueError(f"Filename does not match expected format: {filename}")
@@ -305,7 +306,7 @@ def calculate_transfer_functions(X, Y, U, threshold=1e-12):
 
 def plot_bode_diagram(frequencies, Gx, Gy, show_plot=True):
     """
-    Generate Bode magnitude plots for Gx and Gy.
+    Generate Bode magnitude and phase plots for Gx and Gy in a 2x2 layout.
     
     Parameters:
     -----------
@@ -319,39 +320,66 @@ def plot_bode_diagram(frequencies, Gx, Gy, show_plot=True):
     if not show_plot:
         return
     
-    # Calculate magnitudes
+    # Calculate magnitudes and phases
     Gx_mag = np.abs(Gx)
     Gy_mag = np.abs(Gy)
+    Gx_phase = np.angle(Gx, deg=True)
+    Gy_phase = np.angle(Gy, deg=True)
     
     # Remove NaN values for plotting
-    valid_freq = frequencies[np.isfinite(Gx_mag) & np.isfinite(Gy_mag)]
-    valid_Gx = Gx_mag[np.isfinite(Gx_mag) & np.isfinite(Gy_mag)]
-    valid_Gy = Gy_mag[np.isfinite(Gx_mag) & np.isfinite(Gy_mag)]
+    valid_mask = np.isfinite(Gx_mag) & np.isfinite(Gy_mag) & np.isfinite(Gx_phase) & np.isfinite(Gy_phase)
+    valid_freq = frequencies[valid_mask]
+    valid_Gx_mag = Gx_mag[valid_mask]
+    valid_Gy_mag = Gy_mag[valid_mask]
+    valid_Gx_phase = Gx_phase[valid_mask]
+    valid_Gy_phase = Gy_phase[valid_mask]
     
     # Skip DC component for log plot
     if len(valid_freq) > 1 and valid_freq[0] == 0:
         valid_freq = valid_freq[1:]
-        valid_Gx = valid_Gx[1:]
-        valid_Gy = valid_Gy[1:]
+        valid_Gx_mag = valid_Gx_mag[1:]
+        valid_Gy_mag = valid_Gy_mag[1:]
+        valid_Gx_phase = valid_Gx_phase[1:]
+        valid_Gy_phase = valid_Gy_phase[1:]
     
-    # Create figure with subplots
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+    # Create figure with 2x2 subplots
+    fig, ax = plt.subplots(2, 2, figsize=(14, 10))
     
-    # Plot Gx
-    ax1.loglog(valid_freq, valid_Gx, 'b-', linewidth=2, label='Gx')
-    ax1.set_xlabel('Frequency (Hz)')
-    ax1.set_ylabel('Compliance (m/N)')
-    ax1.set_title('Compliance Gx (X/U)')
-    ax1.grid(True, which="both", ls="-", alpha=0.3)
-    ax1.legend()
+    # Link x-axes within each column for synchronized zooming
+    ax[1, 0].sharex(ax[0, 0])  # Gx magnitude and phase
+    ax[1, 1].sharex(ax[0, 1])  # Gy magnitude and phase
     
-    # Plot Gy
-    ax2.loglog(valid_freq, valid_Gy, 'r-', linewidth=2, label='Gy')
-    ax2.set_xlabel('Frequency (Hz)')
-    ax2.set_ylabel('Compliance (m/N)')
-    ax2.set_title('Compliance Gy (Y/U)')
-    ax2.grid(True, which="both", ls="-", alpha=0.3)
-    ax2.legend()
+    # Plot Gx magnitude (top-left)
+    ax[0, 0].loglog(valid_freq, valid_Gx_mag, 'b-', linewidth=2, label='Gx')
+    ax[0, 0].set_ylabel('Compliance (m/N)')
+    ax[0, 0].set_title('Compliance Gx (X/U) - Magnitude')
+    ax[0, 0].grid(True, which="both", ls="-", alpha=0.3)
+    ax[0, 0].legend()
+    
+    # Plot Gy magnitude (top-right)
+    ax[0, 1].loglog(valid_freq, valid_Gy_mag, 'r-', linewidth=2, label='Gy')
+    ax[0, 1].set_ylabel('Compliance (m/N)')
+    ax[0, 1].set_title('Compliance Gy (Y/U) - Magnitude')
+    ax[0, 1].grid(True, which="both", ls="-", alpha=0.3)
+    ax[0, 1].legend()
+    
+    # Plot Gx phase (bottom-left)
+    ax[1, 0].semilogx(valid_freq, valid_Gx_phase, 'b-', linewidth=2, label='Gx')
+    ax[1, 0].set_xlabel('Frequency (Hz)')
+    ax[1, 0].set_ylabel('Phase (degrees)')
+    ax[1, 0].set_title('Compliance Gx (X/U) - Phase')
+    ax[1, 0].grid(True, which="both", ls="-", alpha=0.3)
+    ax[1, 0].legend()
+    ax[1, 0].set_ylim(-180, 180)
+    
+    # Plot Gy phase (bottom-right)
+    ax[1, 1].semilogx(valid_freq, valid_Gy_phase, 'r-', linewidth=2, label='Gy')
+    ax[1, 1].set_xlabel('Frequency (Hz)')
+    ax[1, 1].set_ylabel('Phase (degrees)')
+    ax[1, 1].set_title('Compliance Gy (Y/U) - Phase')
+    ax[1, 1].grid(True, which="both", ls="-", alpha=0.3)
+    ax[1, 1].legend()
+    ax[1, 1].set_ylim(-180, 180)
     
     plt.tight_layout()
     plt.show()
@@ -379,8 +407,9 @@ def generate_output_filename(original_filepath, suffix):
     
     # Replace direction indicator with suffix
     # Pattern: ..._x.csv or ..._y.csv -> ..._Gx.csv or ..._Gy.csv
+    # Make pattern case-insensitive to handle both .csv and .CSV extensions
     pattern = r'(_[xy]\.csv)$'
-    new_filename = re.sub(pattern, f'_{suffix}.csv', filename)
+    new_filename = re.sub(pattern, f'_{suffix}.csv', filename, flags=re.IGNORECASE)
     
     # Get directory of original file
     directory = os.path.dirname(original_filepath)
