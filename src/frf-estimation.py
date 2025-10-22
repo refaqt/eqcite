@@ -230,6 +230,11 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params):
     Returns:
     --------
     dict : Dictionary containing calculated signals
+        u : Force (N)
+        x : X-direction acceleration (m/s²)
+        y : Y-direction acceleration (m/s²)
+        theta_x : Angular displacement about X-axis (rad)
+        theta_y : Angular displacement about Y-axis (rad)
     """
     # Extract parameters
     L1 = params['L1']
@@ -264,13 +269,16 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params):
 def perform_fft_analysis(time, u, x, y):
     """
     Perform FFT and return frequencies, X, Y, U in frequency domain.
+    Note: x and y are accelerations and will be double-integrated to displacements.
     
     Parameters:
     -----------
     time : array_like
         Time array in seconds
-    u, x, y : array_like
-        Time domain signals
+    u : array_like
+        Force signal (time domain)
+    x, y : array_like
+        Acceleration signals in time domain (m/s²)
         
     Returns:
     --------
@@ -278,14 +286,33 @@ def perform_fft_analysis(time, u, x, y):
     """
     N = len(time)
     dt = time[1] - time[0]
+    fs = 1 / dt  # Sampling frequency
     
     # Perform FFT
     U = np.fft.fft(u)
-    X = np.fft.fft(x)
-    Y = np.fft.fft(y)
+    X_accel = np.fft.fft(x)  # FFT of acceleration
+    Y_accel = np.fft.fft(y)  # FFT of acceleration
     
     # Generate frequency array
     frequencies = np.fft.fftfreq(N, dt)
+    omega = 2 * np.pi * frequencies  # Angular frequency (rad/s)
+    
+    # Double integration using discrete transfer function
+    # H(e^(jω)) = dt²/(1-e^(-jω))²
+    z = np.exp(1j * omega * dt)
+    H = dt**2 / (1 - z**(-1))**2
+    
+    # Apply transfer function to convert acceleration to displacement
+    X = np.zeros_like(X_accel, dtype=complex)
+    Y = np.zeros_like(Y_accel, dtype=complex)
+    
+    # Avoid division by zero at DC (frequency = 0)
+    X[1:] = X_accel[1:] * H[1:]
+    Y[1:] = Y_accel[1:] * H[1:]
+    
+    # DC component (zero frequency) set to zero
+    X[0] = 0
+    Y[0] = 0
     
     # Use only positive frequencies (including DC)
     positive_freq_mask = frequencies >= 0
