@@ -36,9 +36,9 @@ def get_system_parameters():
     dict : System parameters including geometric, angular, and sensor calibration values
     """
     # Geometric parameters (meters)
-    L1 = 0.01      # Length parameter 1
-    L2 = 0.05      # Length parameter 2
-    L3 = 0.2       # Length parameter 3
+    L1 = 0.01      # (m) Length parameter 1
+    L2 = 0.05      # (m) Length parameter 2
+    L3 = 0.2       # (m) Length parameter 3
     
     # Angular parameter
     alpha = 20 * np.pi / 180  # Angle in radians (20 degrees)
@@ -89,11 +89,46 @@ def load_csv_file(filepath):
             raise FileNotFoundError(f"File not found: {filepath}")
         
         # Read CSV file, skipping first 5 header lines
-        df = pd.read_csv(filepath, skiprows=5, header=None)
+        df = pd.read_csv(
+            filepath, 
+            skiprows=5, 
+            header=None,
+            sep=',',  # Explicit separator
+            decimal='.',  # Explicit decimal point
+            skipinitialspace=True  # Skip leading whitespace
+        )
         
         # Validate column count
         if df.shape[1] < 9:
             raise ValueError(f"Expected 9 columns, found {df.shape[1]}")
+        
+        # Define column names for clarity
+        column_names = ['Time', 'A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7']
+        
+        # Convert each column to numeric with error handling
+        for i, col_name in enumerate(column_names):
+            if i >= df.shape[1]:
+                continue
+            
+            # Try converting directly first
+            df.iloc[:, i] = pd.to_numeric(df.iloc[:, i], errors='coerce')
+            
+            # If all values are NaN, try replacing comma with period (European format)
+            if df.iloc[:, i].isna().all():
+                df.iloc[:, i] = pd.to_numeric(
+                    df.iloc[:, i].astype(str).str.replace(',', '.'), 
+                    errors='coerce'
+                )
+            
+            # Check for issues
+            nan_count = df.iloc[:, i].isna().sum()
+            if nan_count > 0:
+                first_nan_idx = df.iloc[:, i].isna().idxmax()
+                raise ValueError(
+                    f"Column {i} ({col_name}) has {nan_count} non-numeric values. "
+                    f"First error at row {first_nan_idx + 5}. "
+                    f"Please check the CSV file format."
+                )
         
         # Extract time and analog inputs
         time = df.iloc[:, 0].values  # Column 0: Time
@@ -106,10 +141,15 @@ def load_csv_file(filepath):
         A6 = df.iloc[:, 7].values    # Column 7: A6
         A7 = df.iloc[:, 8].values    # Column 8: A7
         
-        # Validate data is numeric
+        # Validate data is numeric and finite
         for i, arr in enumerate([time, A0, A1, A2, A3, A4, A5, A6, A7]):
+            if arr.dtype == object:
+                raise ValueError(f"Column {i} contains non-numeric data")
             if not np.isfinite(arr).all():
-                raise ValueError(f"Non-numeric or infinite values found in column {i}")
+                nan_count = (~np.isfinite(arr)).sum()
+                raise ValueError(
+                    f"Column {i} has {nan_count} non-finite values (NaN or Inf)"
+                )
         
         return time, A0, A1, A2, A3, A4, A5, A6, A7
         
@@ -323,8 +363,16 @@ def plot_bode_diagram(frequencies, Gx, Gy, show_plot=True):
     # Calculate magnitudes and phases
     Gx_mag = np.abs(Gx)
     Gy_mag = np.abs(Gy)
-    Gx_phase = np.angle(Gx, deg=True)
-    Gy_phase = np.angle(Gy, deg=True)
+    Gx_phase = np.angle(Gx, deg=False)  # Get phase in radians first
+    Gy_phase = np.angle(Gy, deg=False)  # Get phase in radians first
+    
+    # Unwrap phase to remove discontinuities
+    Gx_phase = np.unwrap(Gx_phase)
+    Gy_phase = np.unwrap(Gy_phase)
+    
+    # Convert to degrees after unwrapping
+    Gx_phase = np.degrees(Gx_phase)
+    Gy_phase = np.degrees(Gy_phase)
     
     # Remove NaN values for plotting
     valid_mask = np.isfinite(Gx_mag) & np.isfinite(Gy_mag) & np.isfinite(Gx_phase) & np.isfinite(Gy_phase)
@@ -370,7 +418,7 @@ def plot_bode_diagram(frequencies, Gx, Gy, show_plot=True):
     ax[1, 0].set_title('Compliance Gx (X/U) - Phase')
     ax[1, 0].grid(True, which="both", ls="-", alpha=0.3)
     ax[1, 0].legend()
-    ax[1, 0].set_ylim(-180, 180)
+    # Removed fixed y-limits to allow unwrapped phase to display properly
     
     # Plot Gy phase (bottom-right)
     ax[1, 1].semilogx(valid_freq, valid_Gy_phase, 'r-', linewidth=2, label='Gy')
@@ -379,7 +427,7 @@ def plot_bode_diagram(frequencies, Gx, Gy, show_plot=True):
     ax[1, 1].set_title('Compliance Gy (Y/U) - Phase')
     ax[1, 1].grid(True, which="both", ls="-", alpha=0.3)
     ax[1, 1].legend()
-    ax[1, 1].set_ylim(-180, 180)
+    # Removed fixed y-limits to allow unwrapped phase to display properly
     
     plt.tight_layout()
     plt.show()
