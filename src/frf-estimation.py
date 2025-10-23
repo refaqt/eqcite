@@ -244,7 +244,7 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params):
     r_u = params['r_u']
     
     # Force input (convert to Newtons)
-    u = A0 * r_u
+    u = A7 * r_u
     
     # Angular displacements
     theta_x = (A1 + A2 - A3 - A4) * np.sin(alpha) / (2 * L3)
