@@ -5,10 +5,11 @@ import tkinter as tk
 from tkinter import filedialog
 import os
 import sys
+import time
 from scipy import signal
 
 # Constants
-r_a = 5 * 9.81 / 10  # Accelerometer sensitivity (m/s²/V)
+r_a = 1 * 9.81 / 0.2  # Accelerometer sensitivity (m/s²/V)
 WINDOW_DURATION = 0.1  # Window width in seconds
 
 
@@ -134,22 +135,22 @@ class FrequencyAnalyzer:
                 interpolated = False
                 poly_coeffs = None
                 
-                # Check if we have at least 4 points on each side for 9-point interpolation
-                if max_idx >= 4 and max_idx < len(magnitude) - 4:
-                    # Extract 9 magnitude points around the maximum
-                    mag_9pts = magnitude[max_idx-4:max_idx+5]
-                    freq_9pts = freq_bins[max_idx-4:max_idx+5]
+                # Check if we have at least 1 point on each side for 3-point interpolation
+                if max_idx >= 1 and max_idx < len(magnitude) - 1:
+                    # Extract 3 magnitude points around the maximum (max_idx-1, max_idx, max_idx+1)
+                    mag_3pts = magnitude[max_idx-1:max_idx+2]
+                    freq_3pts = freq_bins[max_idx-1:max_idx+2]
                     
-                    # Fit 2nd order polynomial through the 9 points
-                    coeffs = np.polyfit(freq_9pts, mag_9pts, 2)
+                    # Fit 2nd order polynomial through the 3 points
+                    coeffs = np.polyfit(freq_3pts, mag_3pts, 2)
                     
                     # Check if polynomial has downward curvature (valid peak)
                     if coeffs[0] < 0:
                         # Find polynomial peak: peak = -b/(2a) for ax^2 + bx + c
                         peak_freq = -coeffs[1] / (2 * coeffs[0])
                         
-                        # Validate peak is within the 9-point frequency range
-                        if freq_9pts[0] <= peak_freq <= freq_9pts[-1]:
+                        # Validate peak is within the 3-point frequency range
+                        if freq_3pts[0] <= peak_freq <= freq_3pts[-1]:
                             dominant_freq = peak_freq
                             interpolated = True
                             poly_coeffs = coeffs
@@ -199,6 +200,25 @@ class FrequencyAnalyzer:
         # Check if click is a left mouse button
         if event.button != 1:
             return
+        
+        # Check if zoom/pan tools are active by checking toolbar mode
+        if hasattr(self.fig.canvas, 'toolbar') and self.fig.canvas.toolbar:
+            toolbar = self.fig.canvas.toolbar
+            if hasattr(toolbar, 'mode') and toolbar.mode != '':
+                return  # Navigation tool is active
+        
+        # Check if modifier keys are pressed (zoom/pan typically use these)
+        if event.key and event.key.lower() in ['ctrl', 'shift', 'alt', 'control']:
+            return
+        
+        # Check if this is a drag operation by detecting rapid successive clicks
+        current_time = time.time()
+        if hasattr(self, '_last_click_time'):
+            if current_time - self._last_click_time < 0.15:  # Less than 150ms between clicks
+                return
+        
+        # Store click time for drag detection
+        self._last_click_time = current_time
         
         # Find nearest datapoint to click location in time
         click_time = event.xdata
@@ -252,16 +272,16 @@ class FrequencyAnalyzer:
         ax2.plot(fft_freqs[max_idx], fft_magnitude[max_idx], 'ro', markersize=8, 
                  label=f'FFT Bin Max: {fft_freqs[max_idx]:.2f} Hz')
         
-        # If interpolation was used, show the 9 points and fitted parabola
+        # If interpolation was used, show the 3 points and fitted parabola
         if interpolated and poly_coeffs is not None:
-            # Show the 9 points used for interpolation
-            mag_9pts = fft_magnitude[max_idx-4:max_idx+5]
-            freq_9pts = fft_freqs[max_idx-4:max_idx+5]
-            ax2.plot(freq_9pts, mag_9pts, 'ro', markersize=6, alpha=0.7, 
+            # Show the 3 points used for interpolation
+            mag_3pts = fft_magnitude[max_idx-1:max_idx+2]
+            freq_3pts = fft_freqs[max_idx-1:max_idx+2]
+            ax2.plot(freq_3pts, mag_3pts, 'ro', markersize=6, alpha=0.7, 
                      label='Interpolation Points')
             
             # Plot fitted parabola
-            freq_fine = np.linspace(freq_9pts[0], freq_9pts[-1], 100)
+            freq_fine = np.linspace(freq_3pts[0], freq_3pts[-1], 100)
             parabola = poly_coeffs[0] * freq_fine**2 + poly_coeffs[1] * freq_fine + poly_coeffs[2]
             ax2.plot(freq_fine, parabola, 'r--', linewidth=2, alpha=0.7, 
                      label='Fitted Parabola')
@@ -299,7 +319,7 @@ FFT Bin Maximum: {fft_freqs[max_idx]:.6f} Hz
 
 Validation Checks:
   Downward curvature: {poly_coeffs[0] < 0}
-  Peak in range: {fft_freqs[max_idx-4] <= dominant_freq <= fft_freqs[max_idx+4]}
+  Peak in range: {fft_freqs[max_idx-1] <= dominant_freq <= fft_freqs[max_idx+1]}
 """
         else:
             summary_text += "Using simple FFT bin maximum (no interpolation)"

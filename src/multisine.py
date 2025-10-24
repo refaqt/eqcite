@@ -6,17 +6,39 @@ import time
 
 
 class MultisineOptimizer:
-    def __init__(self, num_tones, num_samples=4096):
+    def __init__(self, fmin_desired, fmax_desired, fs, df_des):
         """
         Initialize the multisine optimizer
 
         Parameters:
-        num_tones (int): Number of frequency components (K)
-        num_samples (int): Number of time domain samples (N)
+        fmin_desired (float): Minimum desired frequency (Hz)
+        fmax_desired (float): Maximum desired frequency (Hz)
+        fs (float): Sampling rate (Hz)
+        df_des (float): Desired frequency resolution (Hz)
         """
-        self.K = num_tones
-        self.N = num_samples
-        self.frequencies = np.arange(1, self.K + 1) / self.N
+        self.fmin_desired = fmin_desired
+        self.fmax_desired = fmax_desired
+        self.fs = fs
+        self.df_des = df_des
+        
+        # Calculate signal length
+        self.N = round(fs / fmin_desired)
+        
+        # Calculate actual minimum frequency
+        self.fmin = fs / self.N
+        
+        # Calculate frequency resolution
+        # Find the largest df <= df_des such that (fmax_desired - fmin) / df is integer
+        frequency_range = fmax_desired - self.fmin
+        max_steps = int(frequency_range / df_des)
+        self.df = frequency_range / max_steps
+        
+        # Calculate actual maximum frequency
+        self.fmax = self.fmin + max_steps * self.df
+        
+        # Generate frequency array
+        self.frequencies = np.arange(self.fmin, self.fmax + self.df/2, self.df)
+        self.K = len(self.frequencies)
 
     def calculate_crest_factor(self, signal):
         """Calculate the crest factor of a signal"""
@@ -47,8 +69,10 @@ class MultisineOptimizer:
         # Create frequency domain representation
         C = np.zeros(self.N, dtype=complex)
         for k in range(self.K):
-            freq_index = k + 1  # Skip DC component
-            C[freq_index] = amplitudes[k] * np.exp(1j * phases[k])
+            # Calculate frequency index for this frequency component
+            freq_index = round(self.frequencies[k] * self.N / self.fs)
+            if freq_index > 0 and freq_index < self.N:  # Skip DC and Nyquist
+                C[freq_index] = amplitudes[k] * np.exp(1j * phases[k])
 
         # Generate time domain signal using IFFT
         x = self.N * ifft(C)
@@ -130,12 +154,11 @@ class MultisineOptimizer:
         return current_phases, self.calculate_crest_factor(
             self.generate_multisine(current_phases, amplitudes))
 
-    def optimize_multisine(self, method='combined', amplitudes=None):
+    def optimize_multisine(self, amplitudes=None):
         """
-        Main optimization routine
+        Main optimization routine using Yang's method
 
         Parameters:
-        method: 'schroeder', 'yang', 'guillaume', or 'combined'
         amplitudes: Amplitude spectrum (default: flat spectrum)
         """
         if amplitudes is None:
@@ -144,122 +167,135 @@ class MultisineOptimizer:
         # Start with Schroeder phases
         initial_phases = self.schroeder_phases()
 
-        if method == 'schroeder':
-            phases = initial_phases
-            cf = self.calculate_crest_factor(
-                self.generate_multisine(phases, amplitudes))
-
-        elif method == 'yang':
-            phases, cf = self.yang_swapping_method(initial_phases, amplitudes)
-
-        elif method == 'guillaume':
-            phases, cf = self.guillaume_optimization(initial_phases, amplitudes)
-
-        elif method == 'combined':
-            # First apply Yang's method
-            phases, cf = self.yang_swapping_method(initial_phases, amplitudes)
-            # Then refine with Guillaume's method
-            phases, cf = self.guillaume_optimization(phases, amplitudes)
-
-        else:
-            raise ValueError(f"Unknown method: {method}")
+        # Apply Yang's optimization method
+        phases, cf = self.yang_swapping_method(initial_phases, amplitudes)
 
         return phases, cf
 
     def export_multisine(self, filename, phases, amplitudes=None):
-        """Export multisine data to text file"""
+        """Export multisine data to CSV file"""
         if amplitudes is None:
             amplitudes = np.ones(self.K)
 
         # Generate time domain signal
         signal = self.generate_multisine(phases, amplitudes)
 
-        # Create time vector
-        time_vector = np.arange(self.N) / self.N
+        # Create time vector in seconds
+        time_vector = np.arange(self.N) / self.fs
 
-        # Save to file
-        header = (f"# Multisine Signal Data\n"
-                  f"# Number of tones: {self.K}\n"
-                  f"# Number of samples: {self.N}\n"
-                  f"# Crest Factor: {self.calculate_crest_factor(signal):.6f}\n"
-                  f"# Columns: Time, Signal\n")
-
-        data = np.column_stack((time_vector, signal))
-        np.savetxt(filename, data, header=header, fmt='%.10e')
-
-        # Also save frequency domain data
-        freq_filename = filename.replace('.txt', '_frequency_domain.txt')
-        freq_header = (f"# Multisine Frequency Domain Data\n"
-                       f"# Number of tones: {self.K}\n"
-                       f"# Columns: Frequency_Index, Frequency, Amplitude, Phase_deg\n")
-
-        freq_data = []
-        for k in range(self.K):
-            freq_data.append([k + 1, self.frequencies[k], amplitudes[k],
-                              np.degrees(phases[k])])
-
-        np.savetxt(freq_filename, freq_data, header=freq_header, fmt='%.10e')
+        # Create metadata header
+        cf = self.calculate_crest_factor(signal)
+        header_lines = [
+            f"# Multisine Signal Data",
+            f"# fmin_desired: {self.fmin_desired:.6f} Hz",
+            f"# fmax_desired: {self.fmax_desired:.6f} Hz", 
+            f"# fmin: {self.fmin:.6f} Hz",
+            f"# fmax: {self.fmax:.6f} Hz",
+            f"# fs: {self.fs:.6f} Hz",
+            f"# df: {self.df:.6f} Hz",
+            f"# df_des: {self.df_des:.6f} Hz",
+            f"# N: {self.N}",
+            f"# K: {self.K}",
+            f"# Crest Factor: {cf:.6f}",
+            f"# Columns: Time_s, Signal"
+        ]
+        
+        # Write header and data to CSV
+        with open(filename, 'w') as f:
+            for line in header_lines:
+                f.write(line + '\n')
+            f.write('Time_s,Signal\n')
+            for i in range(self.N):
+                f.write(f'{time_vector[i]:.10e},{signal[i]:.10e}\n')
 
         return signal
 
 
-# Example usage and comparison
+# Example usage
 def main():
-    # Test with different numbers of tones
-    tone_counts = [15, 31]
-    methods = ['schroeder', 'yang', 'guillaume', 'combined']
-
-    results = {}
-
-    for K in tone_counts:
-        print(f"\nOptimizing multisine with {K} tones:")
-        print("-" * 50)
-
-        optimizer = MultisineOptimizer(num_tones=K, num_samples=4096)
-
-        for method in methods:
-            start_time = time.time()
-            phases, cf = optimizer.optimize_multisine(method=method)
-            elapsed_time = time.time() - start_time
-
-            results[f"{K}_{method}"] = {
-                'cf': cf,
-                'time': elapsed_time,
-                'phases': phases
-            }
-
-            print(f"{method.capitalize():12} - CF: {cf:.6f}, Time: {elapsed_time:.3f}s")
-
-            # Export the best result for each tone count
-            if method == 'combined':
-                filename = f"multisine_{K}tones_optimized.txt"
-                signal = optimizer.export_multisine(filename, phases)
-                print(f"Exported to {filename}")
-
-    # Create visualization for one example
-    K = 31
-    optimizer = MultisineOptimizer(num_tones=K, num_samples=4096)
-
-    # Compare methods visually
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-    axes = axes.ravel()
-
-    for idx, method in enumerate(methods):
-        phases = results[f"{K}_{method}"]['phases']
-        signal = optimizer.generate_multisine(phases)
-        cf = results[f"{K}_{method}"]['cf']
-
-        axes[idx].plot(signal[:200])  # Plot first 200 samples
-        axes[idx].set_title(f'{method.capitalize()} (CF={cf:.4f})')
-        axes[idx].set_xlabel('Sample')
-        axes[idx].set_ylabel('Amplitude')
-        axes[idx].grid(True, alpha=0.3)
-
+    """
+    Example usage of the adapted multisine generator
+    """
+    # Example parameters
+    fmin_desired = 5.0  # Hz
+    fmax_desired = 500.0  # Hz
+    fs = 5000.0  # Hz
+    df_des = 1.0  # Hz
+    
+    print("Multisine Generator Example")
+    print("=" * 50)
+    print(f"Input parameters:")
+    print(f"  fmin_desired: {fmin_desired} Hz")
+    print(f"  fmax_desired: {fmax_desired} Hz")
+    print(f"  fs: {fs} Hz")
+    print(f"  df_des: {df_des} Hz")
+    print()
+    
+    # Create optimizer
+    optimizer = MultisineOptimizer(fmin_desired, fmax_desired, fs, df_des)
+    
+    # Display calculated parameters
+    print("Calculated parameters:")
+    print(f"  fmin: {optimizer.fmin:.6f} Hz")
+    print(f"  fmax: {optimizer.fmax:.6f} Hz")
+    print(f"  df: {optimizer.df:.6f} Hz")
+    print(f"  N (signal length): {optimizer.N}")
+    print(f"  K (number of tones): {optimizer.K}")
+    print(f"  Frequencies: {optimizer.frequencies[0]:.3f} to {optimizer.frequencies[-1]:.3f} Hz")
+    print()
+    
+    # Optimize multisine
+    print("Optimizing multisine...")
+    start_time = time.time()
+    phases, cf = optimizer.optimize_multisine()
+    elapsed_time = time.time() - start_time
+    
+    print(f"Optimization completed in {elapsed_time:.3f} seconds")
+    print(f"Final crest factor: {cf:.6f}")
+    print()
+    
+    # Export to CSV
+    filename = "multisine_optimized.csv"
+    signal = optimizer.export_multisine(filename, phases)
+    print(f"Multisine exported to {filename}")
+    
+    # Create a simple visualization
+    plt.figure(figsize=(12, 8))
+    
+    # Time domain plot
+    plt.subplot(2, 1, 1)
+    time_vector = np.arange(optimizer.N) / optimizer.fs
+    
+    # Show full signal, but limit to reasonable number of samples for readability
+    max_samples = min(optimizer.N, 2000)  # Show max 2000 samples or full signal
+    plt.plot(time_vector[:max_samples], signal[:max_samples])
+    plt.title(f'Multisine Signal (CF={cf:.4f})')
+    plt.xlabel('Time (s)')
+    plt.ylabel('Amplitude')
+    plt.grid(True, alpha=0.3)
+    
+    # Frequency domain plot
+    plt.subplot(2, 1, 2)
+    freqs = np.fft.fftfreq(optimizer.N, 1/optimizer.fs)
+    fft_signal = np.fft.fft(signal)
+    plt.plot(freqs[:optimizer.N//2], np.abs(fft_signal[:optimizer.N//2]))
+    plt.title('Frequency Spectrum')
+    plt.xlabel('Frequency (Hz)')
+    plt.ylabel('Magnitude')
+    plt.grid(True, alpha=0.3)
+    plt.xlim(0, optimizer.fmax * 1.1)
+    
     plt.tight_layout()
-    plt.savefig('multisine_comparison.png', dpi=150)
+    plt.savefig('multisine_result.png', dpi=150)
     plt.show()
-
-    return results
+    
+    return {
+        'optimizer': optimizer,
+        'phases': phases,
+        'crest_factor': cf,
+        'signal': signal,
+        'filename': filename
+    }
 
 
 if __name__ == "__main__":
