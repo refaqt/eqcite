@@ -49,6 +49,9 @@ def get_system_parameters():
     v_u = 2.5e-3           # Force hammer sensitivity (mV/N)
     r_u = 1 / (v_u * m_u)  # Combined output sensitivity (N/V)
     
+    # Bias removal parameters
+    bias_window_size = 1000  # Number of samples for bias estimation window
+    
     return {
         'L1': L1,
         'L2': L2,
@@ -57,7 +60,8 @@ def get_system_parameters():
         'r_a': r_a,
         'm_u': m_u,
         'v_u': v_u,
-        'r_u': r_u
+        'r_u': r_u,
+        'bias_window_size': bias_window_size
     }
 
 # =============================================================================
@@ -216,6 +220,57 @@ def estimate_sample_time(time_array):
     dt = time_array[1] - time_array[0]
     return dt
 
+def remove_bias(signal, window_size=1000):
+    """
+    Remove bias from signal by finding the minimal variance window and subtracting its mean.
+    
+    The function slides a window across the signal, calculates variance at each position,
+    finds the window with minimum variance (assumed to be the quietest/most stable region),
+    calculates the mean of that window, and subtracts it from the entire signal.
+    
+    Parameters:
+    -----------
+    signal : array_like
+        Input signal array
+    window_size : int
+        Size of the sliding window in samples (default: 1000)
+        
+    Returns:
+    --------
+    array_like : Bias-corrected signal
+    
+    Notes:
+    ------
+    If the signal length is less than the window size, the mean of the entire signal
+    is used for bias removal (with a warning).
+    """
+    signal = np.asarray(signal)
+    signal_length = len(signal)
+    
+    # Handle case where signal is shorter than window
+    if signal_length < window_size:
+        print(f"Warning: Signal length ({signal_length}) is less than window size ({window_size}). "
+              f"Using entire signal for bias calculation.")
+        bias = np.mean(signal)
+        return signal - bias
+    
+    # Calculate variance for each window position
+    num_windows = signal_length - window_size + 1
+    variances = np.zeros(num_windows)
+    
+    for i in range(num_windows):
+        window = signal[i:i + window_size]
+        variances[i] = np.var(window)
+    
+    # Find window with minimum variance
+    min_var_idx = np.argmin(variances)
+    
+    # Calculate mean of the minimal variance window
+    bias = np.mean(signal[min_var_idx:min_var_idx + window_size])
+    
+    # Remove bias from entire signal
+    return signal - bias
+
 def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params):
     """
     Calculate u, x, y, theta_x, theta_y from analog inputs.
@@ -247,12 +302,12 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params):
     u = A7 * r_u
     
     # Angular displacements
-    theta_x = (A1 + A2 - A3 - A4) * np.sin(alpha) / (2 * L3)
-    theta_y = (A1 - A2 - A3 + A4) * np.cos(alpha) / (2 * L3)
+    theta_x = -(A1 + A2 - A3 - A4) * np.sin(alpha) / (2 * L3)
+    theta_y = -(A1 - A2 - A3 + A4) * np.cos(alpha) / (2 * L3)
     
     # Linear displacements
-    x = (A1 - A2 + A3 - A4) * np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2) + A6
-    y = -(A1 + A2 + A3 + A4) * np.sin(alpha) / 4 + theta_x * (L1 + L2 + L3 / 2) + A5
+    x = -(A1 - A2 + A3 - A4) * np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2) - A6
+    y = (A1 + A2 + A3 + A4) * np.sin(alpha) / 4 + theta_x * (L1 + L2 + L3 / 2) - A5
     
     return {
         'u': u,
@@ -270,6 +325,7 @@ def perform_fft_analysis(time, u, x, y):
     """
     Perform FFT and return frequencies, X, Y, U in frequency domain.
     Note: x and y are accelerations and will be double-integrated to displacements.
+    Also returns acceleration FFT results for comparison.
     
     Parameters:
     -----------
@@ -283,6 +339,7 @@ def perform_fft_analysis(time, u, x, y):
     Returns:
     --------
     dict : Dictionary containing frequency array and FFT results
+        Includes both displacement (X, Y) and acceleration (X_accel, Y_accel) results
     """
     N = len(time)
     dt = time[1] - time[0]
@@ -320,12 +377,16 @@ def perform_fft_analysis(time, u, x, y):
     U_pos = U[positive_freq_mask]
     X_pos = X[positive_freq_mask]
     Y_pos = Y[positive_freq_mask]
+    X_accel_pos = X_accel[positive_freq_mask]
+    Y_accel_pos = Y_accel[positive_freq_mask]
     
     return {
         'frequencies': frequencies_pos,
         'U': U_pos,
         'X': X_pos,
         'Y': Y_pos,
+        'X_accel': X_accel_pos,
+        'Y_accel': Y_accel_pos,
         'N': N,
         'dt': dt
     }
@@ -371,23 +432,66 @@ def calculate_transfer_functions(X, Y, U, threshold=1e-12):
 # VISUALIZATION
 # =============================================================================
 
-def plot_bode_diagram(frequencies, Gx, Gy, show_plot=True):
+def plot_signal_comparison(time, original_signals, corrected_signals, show_plot=True):
+    """
+    Plot comparison of original and bias-corrected signals for A0-A7.
+    Creates a single figure with 2 rows and 4 columns (8 subplots total).
+    
+    Parameters:
+    -----------
+    time : array_like
+        Time array in seconds
+    original_signals : dict
+        Dictionary with keys 'A0' through 'A7' containing original signals
+    corrected_signals : dict
+        Dictionary with keys 'A0' through 'A7' containing corrected signals
+    show_plot : bool
+        Whether to display the plots
+    """
+    if not show_plot:
+        return
+    
+    signal_names = ['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7']
+    
+    # Create figure with 2 rows and 4 columns
+    fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+    axes = axes.flatten()  # Flatten to 1D array for easy indexing
+    
+    for idx, name in enumerate(signal_names):
+        ax = axes[idx]
+        
+        ax.plot(time, original_signals[name], 'b-', linewidth=1, alpha=0.7, label='Original')
+        ax.plot(time, corrected_signals[name], 'r-', linewidth=1, alpha=0.7, label='Bias Corrected')
+        
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel('Voltage (V)')
+        ax.set_title(f'Signal Comparison - {name}')
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8)
+    
+    plt.tight_layout()
+    plt.show()
+
+def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_plot=True):
     """
     Generate Bode magnitude and phase plots for Gx and Gy in a 2x2 layout.
+    Optionally overlay acceleration-based transfer functions.
     
     Parameters:
     -----------
     frequencies : array_like
         Frequency array in Hz
     Gx, Gy : array_like
-        Transfer functions (complex)
+        Displacement-based transfer functions (complex)
+    Gx_accel, Gy_accel : array_like, optional
+        Acceleration-based transfer functions (complex)
     show_plot : bool
         Whether to display the plot
     """
     if not show_plot:
         return
     
-    # Calculate magnitudes and phases
+    # Calculate magnitudes and phases for displacement
     Gx_mag = np.abs(Gx)
     Gy_mag = np.abs(Gy)
     Gx_phase = np.angle(Gx, deg=False)  # Get phase in radians first
@@ -401,13 +505,37 @@ def plot_bode_diagram(frequencies, Gx, Gy, show_plot=True):
     Gx_phase = np.degrees(Gx_phase)
     Gy_phase = np.degrees(Gy_phase)
     
-    # Remove NaN values for plotting
+    # Calculate magnitudes and phases for acceleration if provided
+    if Gx_accel is not None and Gy_accel is not None:
+        Gx_accel_mag = np.abs(Gx_accel)
+        Gy_accel_mag = np.abs(Gy_accel)
+        Gx_accel_phase = np.angle(Gx_accel, deg=False)
+        Gy_accel_phase = np.angle(Gy_accel, deg=False)
+        
+        # Unwrap phase
+        Gx_accel_phase = np.unwrap(Gx_accel_phase)
+        Gy_accel_phase = np.unwrap(Gy_accel_phase)
+        
+        # Convert to degrees
+        Gx_accel_phase = np.degrees(Gx_accel_phase)
+        Gy_accel_phase = np.degrees(Gy_accel_phase)
+    
+    # Remove NaN values for plotting (displacement)
     valid_mask = np.isfinite(Gx_mag) & np.isfinite(Gy_mag) & np.isfinite(Gx_phase) & np.isfinite(Gy_phase)
     valid_freq = frequencies[valid_mask]
     valid_Gx_mag = Gx_mag[valid_mask]
     valid_Gy_mag = Gy_mag[valid_mask]
     valid_Gx_phase = Gx_phase[valid_mask]
     valid_Gy_phase = Gy_phase[valid_mask]
+    
+    # Process acceleration data if provided
+    if Gx_accel is not None and Gy_accel is not None:
+        valid_mask_accel = np.isfinite(Gx_accel_mag) & np.isfinite(Gy_accel_mag) & np.isfinite(Gx_accel_phase) & np.isfinite(Gy_accel_phase)
+        valid_freq_accel = frequencies[valid_mask_accel]
+        valid_Gx_accel_mag = Gx_accel_mag[valid_mask_accel]
+        valid_Gy_accel_mag = Gy_accel_mag[valid_mask_accel]
+        valid_Gx_accel_phase = Gx_accel_phase[valid_mask_accel]
+        valid_Gy_accel_phase = Gy_accel_phase[valid_mask_accel]
     
     # Skip DC component for log plot
     if len(valid_freq) > 1 and valid_freq[0] == 0:
@@ -417,6 +545,15 @@ def plot_bode_diagram(frequencies, Gx, Gy, show_plot=True):
         valid_Gx_phase = valid_Gx_phase[1:]
         valid_Gy_phase = valid_Gy_phase[1:]
     
+    # Skip DC component for acceleration data
+    if Gx_accel is not None and Gy_accel is not None:
+        if len(valid_freq_accel) > 1 and valid_freq_accel[0] == 0:
+            valid_freq_accel = valid_freq_accel[1:]
+            valid_Gx_accel_mag = valid_Gx_accel_mag[1:]
+            valid_Gy_accel_mag = valid_Gy_accel_mag[1:]
+            valid_Gx_accel_phase = valid_Gx_accel_phase[1:]
+            valid_Gy_accel_phase = valid_Gy_accel_phase[1:]
+    
     # Create figure with 2x2 subplots
     fig, ax = plt.subplots(2, 2, figsize=(14, 10))
     
@@ -425,21 +562,27 @@ def plot_bode_diagram(frequencies, Gx, Gy, show_plot=True):
     ax[1, 1].sharex(ax[0, 1])  # Gy magnitude and phase
     
     # Plot Gx magnitude (top-left)
-    ax[0, 0].loglog(valid_freq, valid_Gx_mag, 'b-', linewidth=2, label='Gx')
-    ax[0, 0].set_ylabel('Compliance (m/N)')
+    ax[0, 0].loglog(valid_freq, valid_Gx_mag, 'b-', linewidth=2, label='Gx (Displacement)')
+    if Gx_accel is not None:
+        ax[0, 0].loglog(valid_freq_accel, valid_Gx_accel_mag, 'b--', linewidth=2, alpha=0.7, label='Gx (Acceleration)')
+    ax[0, 0].set_ylabel('Compliance (m/N or m/s²/N)')
     ax[0, 0].set_title('Compliance Gx (X/U) - Magnitude')
     ax[0, 0].grid(True, which="both", ls="-", alpha=0.3)
     ax[0, 0].legend()
     
     # Plot Gy magnitude (top-right)
-    ax[0, 1].loglog(valid_freq, valid_Gy_mag, 'r-', linewidth=2, label='Gy')
-    ax[0, 1].set_ylabel('Compliance (m/N)')
+    ax[0, 1].loglog(valid_freq, valid_Gy_mag, 'r-', linewidth=2, label='Gy (Displacement)')
+    if Gy_accel is not None:
+        ax[0, 1].loglog(valid_freq_accel, valid_Gy_accel_mag, 'r--', linewidth=2, alpha=0.7, label='Gy (Acceleration)')
+    ax[0, 1].set_ylabel('Compliance (m/N or m/s²/N)')
     ax[0, 1].set_title('Compliance Gy (Y/U) - Magnitude')
     ax[0, 1].grid(True, which="both", ls="-", alpha=0.3)
     ax[0, 1].legend()
     
     # Plot Gx phase (bottom-left)
-    ax[1, 0].semilogx(valid_freq, valid_Gx_phase, 'b-', linewidth=2, label='Gx')
+    ax[1, 0].semilogx(valid_freq, valid_Gx_phase, 'b-', linewidth=2, label='Gx (Displacement)')
+    if Gx_accel is not None:
+        ax[1, 0].semilogx(valid_freq_accel, valid_Gx_accel_phase, 'b--', linewidth=2, alpha=0.7, label='Gx (Acceleration)')
     ax[1, 0].set_xlabel('Frequency (Hz)')
     ax[1, 0].set_ylabel('Phase (degrees)')
     ax[1, 0].set_title('Compliance Gx (X/U) - Phase')
@@ -448,7 +591,9 @@ def plot_bode_diagram(frequencies, Gx, Gy, show_plot=True):
     # Removed fixed y-limits to allow unwrapped phase to display properly
     
     # Plot Gy phase (bottom-right)
-    ax[1, 1].semilogx(valid_freq, valid_Gy_phase, 'r-', linewidth=2, label='Gy')
+    ax[1, 1].semilogx(valid_freq, valid_Gy_phase, 'r-', linewidth=2, label='Gy (Displacement)')
+    if Gy_accel is not None:
+        ax[1, 1].semilogx(valid_freq_accel, valid_Gy_accel_phase, 'r--', linewidth=2, alpha=0.7, label='Gy (Acceleration)')
     ax[1, 1].set_xlabel('Frequency (Hz)')
     ax[1, 1].set_ylabel('Phase (degrees)')
     ax[1, 1].set_title('Compliance Gy (Y/U) - Phase')
@@ -571,17 +716,47 @@ def process_measurement_file(filepath, show_plot=True, save_files=True):
         # Load CSV data
         time, A0, A1, A2, A3, A4, A5, A6, A7 = load_csv_file(filepath)
         
+        # Store original signals for comparison plots
+        original_signals = {
+            'A0': A0.copy(), 'A1': A1.copy(), 'A2': A2.copy(), 'A3': A3.copy(),
+            'A4': A4.copy(), 'A5': A5.copy(), 'A6': A6.copy(), 'A7': A7.copy()
+        }
+        
+        # Remove bias from all analog input signals
+        window_size = params['bias_window_size']
+        A0 = remove_bias(A0, window_size)
+        A1 = remove_bias(A1, window_size)
+        A2 = remove_bias(A2, window_size)
+        A3 = remove_bias(A3, window_size)
+        A4 = remove_bias(A4, window_size)
+        A5 = remove_bias(A5, window_size)
+        A6 = remove_bias(A6, window_size)
+        A7 = remove_bias(A7, window_size)
+        
+        # Store corrected signals for comparison plots
+        corrected_signals = {
+            'A0': A0, 'A1': A1, 'A2': A2, 'A3': A3,
+            'A4': A4, 'A5': A5, 'A6': A6, 'A7': A7
+        }
+        
+        # Show signal comparison plots
+        plot_signal_comparison(time, original_signals, corrected_signals, show_plot)
+        
         # Calculate derived signals
         signals = calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params)
         
         # Perform FFT analysis
         fft_results = perform_fft_analysis(time, signals['u'], signals['x'], signals['y'])
         
-        # Calculate transfer functions
+        # Calculate displacement transfer functions
         tf_results = calculate_transfer_functions(fft_results['X'], fft_results['Y'], fft_results['U'])
         
-        # Generate plots
-        plot_bode_diagram(fft_results['frequencies'], tf_results['Gx'], tf_results['Gy'], show_plot)
+        # Calculate acceleration transfer functions
+        tf_accel_results = calculate_transfer_functions(fft_results['X_accel'], fft_results['Y_accel'], fft_results['U'])
+        
+        # Generate Bode plots with both displacement and acceleration
+        plot_bode_diagram(fft_results['frequencies'], tf_results['Gx'], tf_results['Gy'], 
+                         tf_accel_results['Gx'], tf_accel_results['Gy'], show_plot)
         
         # Save results
         saved_files = save_results(fft_results['frequencies'], tf_results['Gx'], tf_results['Gy'], 
