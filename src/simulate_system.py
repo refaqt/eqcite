@@ -111,10 +111,13 @@ def generate_hammer_signal(params):
 
 def simulate_msd_system(time, force, params):
     """
-    Simulate mass-spring-damper system using frequency-domain approach.
+    Simulate mass-spring-damper system using discrete-time z-transform approach.
     
-    Transfer function: H(s) = 1/(m·s² + c·s + k)
-    Frequency domain: H(jω) = 1/(-m·ω² + jc·ω + k)
+    Uses bilinear transform (Tustin's method) to convert continuous system to discrete:
+    - Continuous: H(s) = 1/(m·s² + c·s + k)
+    - Bilinear transform: s = (2/T)·(z-1)/(z+1)
+    - Results in: H(z) = (b₀ + b₁z⁻¹ + b₂z⁻²)/(1 + a₁z⁻¹ + a₂z⁻²)
+    
     This gives position output for force input.
     
     Parameters:
@@ -131,28 +134,51 @@ def simulate_msd_system(time, force, params):
     tuple : (position, velocity, acceleration)
     """
     N = len(time)
-    dt = params.dt
+    T = params.dt  # Sampling period
     m = params.mass
     c = params.damping
     k = params.stiffness
     
+    # Calculate discrete transfer function coefficients using bilinear transform
+    # H(s) = 1/(m·s² + c·s + k) with s = (2/T)·(z-1)/(z+1)
+    
+    # Normalization factor (denominator evaluated at z=1 equivalent)
+    norm = 4*m + 2*c*T + k*T**2
+    
+    # Numerator coefficients: [b₀, b₁, b₂]
+    b0 = T**2 / norm
+    b1 = 2 * T**2 / norm
+    b2 = T**2 / norm
+    
+    # Denominator coefficients: [1, a₁, a₂] (normalized so a₀ = 1)
+    a1 = 2*(k*T**2 - 4*m) / norm
+    a2 = (4*m - 2*c*T + k*T**2) / norm
+    
     # Take FFT of input force
     U = np.fft.fft(force)
     
-    # Generate frequency array
-    frequencies = np.fft.fftfreq(N, dt)
+    # Generate frequency array and z values
+    frequencies = np.fft.fftfreq(N, T)
     omega = 2 * np.pi * frequencies
     
-    # Create MSD system transfer function H(jω) = 1/(-m·ω² + jc·ω + k)
-    # This gives POSITION output for force input
-    H_system = np.zeros(N, dtype=complex)
-    H_system[0] = 0.0  # DC component (rigid body mode)
+    # Evaluate H(z) at z = e^(jωT) for each frequency
+    # z = e^(j·2π·f·T)
+    z = np.exp(1j * omega * T)
+    z_inv = 1.0 / z  # z⁻¹
+    z_inv2 = z_inv ** 2  # z⁻²
     
-    # For all other frequencies
-    denominator = -m * omega[1:]**2 + 1j * c * omega[1:] + k
-    H_system[1:] = 1.0 / denominator
+    # H(z) = (b₀ + b₁z⁻¹ + b₂z⁻²)/(1 + a₁z⁻¹ + a₂z⁻²)
+    numerator = b0 + b1 * z_inv + b2 * z_inv2
+    denominator = 1.0 + a1 * z_inv + a2 * z_inv2
     
-    # Multiply in frequency domain: X_position(jω) = U(jω) · H(jω)
+    H_system = numerator / denominator
+    
+    # Handle DC component (f=0, z=1)
+    # At DC, H(z=1) should give static deflection: 1/k
+    # But we'll set to 0 to avoid drift in position
+    H_system[0] = 0.0
+    
+    # Multiply in frequency domain: X_position = U · H(z)
     X_position = U * H_system
     
     # Transform back to time domain (position)
@@ -164,7 +190,7 @@ def simulate_msd_system(time, force, params):
     velocity = np.real(np.fft.ifft(X_velocity))
     
     # Calculate acceleration by differentiating velocity in frequency domain
-    # X_acceleration(jω) = jω · X_velocity(jω) = (jω)² · X_position(jω) = -ω² · X_position(jω)
+    # X_acceleration(jω) = jω · X_velocity(jω)
     X_acceleration = 1j * omega * X_velocity
     acceleration = np.real(np.fft.ifft(X_acceleration))
     
@@ -458,7 +484,7 @@ def main():
     time, force_raw, force = generate_hammer_signal(params)
     
     # Simulate MSD system
-    print("Simulating mass-spring-damper system (frequency domain)...")
+    print("Simulating mass-spring-damper system (discrete z-transform)...")
     position, velocity, acceleration = simulate_msd_system(time, force, params)
     
     # Map to sensors

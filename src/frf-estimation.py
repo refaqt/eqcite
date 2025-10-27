@@ -297,6 +297,7 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params):
     L3 = params['L3']
     alpha = params['alpha']
     r_u = params['r_u']
+    r_a = params['r_a']
     
     # Force input (convert to Newtons)
     u = A7 * r_u
@@ -305,9 +306,9 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params):
     theta_x = -(A1 + A2 - A3 - A4) * np.sin(alpha) / (2 * L3)
     theta_y = -(A1 - A2 - A3 + A4) * np.cos(alpha) / (2 * L3)
     
-    # Linear displacements
-    x = -(A1 - A2 + A3 - A4) * np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2) - A6
-    y = (A1 + A2 + A3 + A4) * np.sin(alpha) / 4 + theta_x * (L1 + L2 + L3 / 2) - A5
+    # Linear accelerations (convert from voltage to m/s²)
+    x = (-(A1 - A2 + A3 - A4) * np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2) - A6) * r_a
+    y = ((A1 + A2 + A3 + A4) * np.sin(alpha) / 4 + theta_x * (L1 + L2 + L3 / 2) - A5) * r_a
     
     return {
         'u': u,
@@ -468,6 +469,50 @@ def plot_signal_comparison(time, original_signals, corrected_signals, show_plot=
         ax.set_title(f'Signal Comparison - {name}')
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8)
+    
+    plt.tight_layout()
+    plt.show()
+
+def plot_time_domain_signals(time, u, x, y, show_plot=True):
+    """
+    Plot time-domain signals u, x, y in a single figure with synchronized x-axes.
+    
+    Parameters:
+    -----------
+    time : array_like
+        Time array in seconds
+    u : array_like
+        Force signal (N)
+    x : array_like
+        X-direction acceleration (m/s²)
+    y : array_like
+        Y-direction acceleration (m/s²)
+    show_plot : bool
+        Whether to display the plot
+    """
+    if not show_plot:
+        return
+    
+    fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+    
+    # Plot force u
+    axes[0].plot(time, u, 'b-', linewidth=1)
+    axes[0].set_ylabel('Force (N)')
+    axes[0].set_title('Force Input u(t)')
+    axes[0].grid(True, alpha=0.3)
+    
+    # Plot x acceleration
+    axes[1].plot(time, x, 'r-', linewidth=1)
+    axes[1].set_ylabel('Acceleration (m/s²)')
+    axes[1].set_title('X-Direction Acceleration x(t)')
+    axes[1].grid(True, alpha=0.3)
+    
+    # Plot y acceleration
+    axes[2].plot(time, y, 'g-', linewidth=1)
+    axes[2].set_xlabel('Time (s)')
+    axes[2].set_ylabel('Acceleration (m/s²)')
+    axes[2].set_title('Y-Direction Acceleration y(t)')
+    axes[2].grid(True, alpha=0.3)
     
     plt.tight_layout()
     plt.show()
@@ -744,6 +789,9 @@ def process_measurement_file(filepath, show_plot=True, save_files=True):
         
         # Calculate derived signals
         signals = calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params)
+        
+        # Plot time-domain signals
+        plot_time_domain_signals(time, signals['u'], signals['x'], signals['y'], show_plot)
         
         # Perform FFT analysis
         fft_results = perform_fft_analysis(time, signals['u'], signals['x'], signals['y'])
