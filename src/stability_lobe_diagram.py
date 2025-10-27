@@ -779,13 +779,13 @@ def main():
 
     # Select material and cutting conditions
     material = "Aluminum 6061-T6"
-    tool_diameter = 10.0  # mm
+    tool_diameter = 6.0  # mm
     helix_angle = 45.0  # degrees (typical for end mills)
     rake_angle = 10.0  # degrees (typical positive rake)
     num_teeth = 3
     feed_per_tooth = 0.025  # mm/tooth
-    axial_depth = 20.0  # mm (length of cut)
-    radial_depth = 0.5  # mm (stepover)
+    axial_depth = 10.0  # mm (length of cut)
+    radial_depth = 1  # mm (stepover)
     milling_type = 'down'  # down-milling (climb milling)
 
     print("\n" + "="*80)
@@ -831,9 +831,9 @@ def main():
     print(f"  Radial immersion: {radial_depth/tool_diameter*100:.1f}%")
 
     # Machine tool parameters (typical for a milling machine)
-    k = 2e6  # Stiffness (N/m) - typical for medium rigidity machine
-    zeta = 0.005  # Damping ratio (2% damping is typical)
-    fn = 150  # Natural frequency (Hz) - typical for medium rigidity machine
+    k = 1e6  # Stiffness (N/m) - typical for medium rigidity machine
+    zeta = 0.02  # Damping ratio (2% damping is typical)
+    fn = 50  # Natural frequency (Hz) - typical for medium rigidity machine
 
     print(f"\n" + "-"*80)
     print("MACHINE TOOL PARAMETERS")

@@ -649,6 +649,62 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
     plt.tight_layout()
     plt.show()
 
+def plot_force_psd(frequencies, U, dt, N, show_plot=True):
+    """
+    Plot Power Spectral Density of the input force signal.
+    
+    Parameters:
+    -----------
+    frequencies : array_like
+        Frequency array in Hz
+    U : array_like
+        Force FFT (complex)
+    dt : float
+        Sample time in seconds
+    N : int
+        Number of samples
+    show_plot : bool
+        Whether to display the plot
+    """
+    if not show_plot:
+        return
+    
+    # Calculate sampling frequency
+    fs = 1 / dt
+    
+    # Calculate Power Spectral Density from FFT
+    # PSD = (2 / (N * fs)) * |U|^2
+    # Factor of 2 accounts for one-sided spectrum (positive frequencies only)
+    U_magnitude = np.abs(U)
+    PSD = (2 / (N * fs)) * U_magnitude**2
+    
+    # Remove DC component and prepare data for plotting
+    valid_freq = frequencies.copy()
+    valid_PSD = PSD.copy()
+    
+    # Skip DC component (frequency = 0) for log plot
+    if len(valid_freq) > 1 and valid_freq[0] == 0:
+        valid_freq = valid_freq[1:]
+        valid_PSD = valid_PSD[1:]
+    
+    # Remove any NaN or infinite values
+    valid_mask = np.isfinite(valid_PSD) & (valid_PSD > 0)
+    valid_freq = valid_freq[valid_mask]
+    valid_PSD = valid_PSD[valid_mask]
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Plot PSD on log-log scale
+    ax.loglog(valid_freq, valid_PSD, 'b-', linewidth=2)
+    ax.set_xlabel('Frequency (Hz)')
+    ax.set_ylabel('PSD (N²/Hz)')
+    ax.set_title('Power Spectral Density of Input Force')
+    ax.grid(True, which="both", ls="-", alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+
 # =============================================================================
 # FILE OUTPUT
 # =============================================================================
@@ -795,7 +851,11 @@ def process_measurement_file(filepath, show_plot=True, save_files=True):
         
         # Perform FFT analysis
         fft_results = perform_fft_analysis(time, signals['u'], signals['x'], signals['y'])
-        
+
+        # Generate PSD plot for input force
+        plot_force_psd(fft_results['frequencies'], fft_results['U'],
+                       fft_results['dt'], fft_results['N'], show_plot)
+
         # Calculate displacement transfer functions
         tf_results = calculate_transfer_functions(fft_results['X'], fft_results['Y'], fft_results['U'])
         
