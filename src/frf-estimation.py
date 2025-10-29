@@ -19,6 +19,7 @@ import re
 import os
 from pathlib import Path
 import warnings
+from scipy import signal
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
@@ -52,6 +53,9 @@ def get_system_parameters():
     # Bias removal parameters
     bias_window_size = 1000  # Number of samples for bias estimation window
     
+    # High-pass filter parameters
+    highpass_cutoff_hz = 0.5  # High-pass filter cutoff frequency (Hz)
+    
     return {
         'L1': L1,
         'L2': L2,
@@ -61,7 +65,8 @@ def get_system_parameters():
         'm_u': m_u,
         'v_u': v_u,
         'r_u': r_u,
-        'bias_window_size': bias_window_size
+        'bias_window_size': bias_window_size,
+        'highpass_cutoff_hz': highpass_cutoff_hz
     }
 
 # =============================================================================
@@ -271,6 +276,31 @@ def remove_bias(signal, window_size=1000):
     # Remove bias from entire signal
     return signal - bias
 
+def apply_highpass_filter(data, cutoff_hz, fs):
+    """
+    Apply 4th-order Bessel high-pass filter to the data.
+    
+    Parameters:
+    -----------
+    data : array_like
+        Input signal array
+    cutoff_hz : float
+        Cutoff frequency in Hz
+    fs : float
+        Sampling frequency in Hz
+        
+    Returns:
+    --------
+    array_like : High-pass filtered signal
+    """
+    # Design 4th-order Bessel high-pass filter
+    b, a = signal.bessel(N=4, Wn=cutoff_hz, btype='high', analog=False, fs=fs)
+    
+    # Apply zero-phase filtering using filtfilt
+    filtered_data = signal.filtfilt(b, a, data)
+    
+    return filtered_data
+
 def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params):
     """
     Calculate u, x, y, theta_x, theta_y from analog inputs.
@@ -388,6 +418,8 @@ def perform_fft_analysis(time, u, x, y):
         'Y': Y_pos,
         'X_accel': X_accel_pos,
         'Y_accel': Y_accel_pos,
+        'X_full': X,  # Full spectrum (positive and negative frequencies)
+        'Y_full': Y,  # Full spectrum (positive and negative frequencies)
         'N': N,
         'dt': dt
     }
@@ -433,9 +465,9 @@ def calculate_transfer_functions(X, Y, U, threshold=1e-12):
 # VISUALIZATION
 # =============================================================================
 
-def plot_signal_comparison(time, original_signals, corrected_signals, show_plot=True):
+def plot_signal_comparison(time, original_signals, corrected_signals, filtered_signals, show_plot=True):
     """
-    Plot comparison of original and bias-corrected signals for A0-A7.
+    Plot comparison of original, bias-corrected, and high-pass filtered signals for A0-A7.
     Creates a single figure with 2 rows and 4 columns (8 subplots total).
     
     Parameters:
@@ -445,7 +477,9 @@ def plot_signal_comparison(time, original_signals, corrected_signals, show_plot=
     original_signals : dict
         Dictionary with keys 'A0' through 'A7' containing original signals
     corrected_signals : dict
-        Dictionary with keys 'A0' through 'A7' containing corrected signals
+        Dictionary with keys 'A0' through 'A7' containing bias-corrected signals
+    filtered_signals : dict
+        Dictionary with keys 'A0' through 'A7' containing high-pass filtered signals
     show_plot : bool
         Whether to display the plots
     """
@@ -463,6 +497,7 @@ def plot_signal_comparison(time, original_signals, corrected_signals, show_plot=
         
         ax.plot(time, original_signals[name], 'b-', linewidth=1, alpha=0.7, label='Original')
         ax.plot(time, corrected_signals[name], 'r-', linewidth=1, alpha=0.7, label='Bias Corrected')
+        ax.plot(time, filtered_signals[name], 'g-', linewidth=1, alpha=0.7, label='High-pass Filtered')
         
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Voltage (V)')
@@ -649,6 +684,56 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
     plt.tight_layout()
     plt.show()
 
+def plot_reconstructed_time_signals(time, u, X_freq, Y_freq, show_plot=True):
+    """
+    Plot time-domain signals: u (force), x_pos, and y_pos.
+    x_pos and y_pos are reconstructed from frequency domain using IFFT.
+    
+    Parameters:
+    -----------
+    time : array_like
+        Time array in seconds
+    u : array_like
+        Force signal in time domain (N)
+    X_freq : array_like
+        X displacement in frequency domain (complex, full spectrum)
+    Y_freq : array_like
+        Y displacement in frequency domain (complex, full spectrum)
+    show_plot : bool
+        Whether to display the plot
+    """
+    if not show_plot:
+        return
+    
+    # Perform inverse FFT to reconstruct time-domain signals
+    x_pos = np.real(np.fft.ifft(X_freq))
+    y_pos = np.real(np.fft.ifft(Y_freq))
+    
+    # Create figure with 3 subplots and shared x-axis
+    fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+    
+    # Plot force u
+    axes[0].plot(time, u, 'b-', linewidth=1)
+    axes[0].set_ylabel('Force (N)')
+    axes[0].set_title('Force Input u(t)')
+    axes[0].grid(True, alpha=0.3)
+    
+    # Plot x displacement
+    axes[1].plot(time, x_pos, 'r-', linewidth=1)
+    axes[1].set_ylabel('Displacement (m)')
+    axes[1].set_title('X-Direction Displacement x_pos(t)')
+    axes[1].grid(True, alpha=0.3)
+    
+    # Plot y displacement
+    axes[2].plot(time, y_pos, 'g-', linewidth=1)
+    axes[2].set_xlabel('Time (s)')
+    axes[2].set_ylabel('Displacement (m)')
+    axes[2].set_title('Y-Direction Displacement y_pos(t)')
+    axes[2].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+
 def plot_force_psd(frequencies, U, dt, N, show_plot=True):
     """
     Plot Power Spectral Density of the input force signal.
@@ -817,6 +902,9 @@ def process_measurement_file(filepath, show_plot=True, save_files=True):
         # Load CSV data
         time, A0, A1, A2, A3, A4, A5, A6, A7 = load_csv_file(filepath)
         
+        # Calculate sampling frequency
+        fs = 1 / estimate_sample_time(time)
+        
         # Store original signals for comparison plots
         original_signals = {
             'A0': A0.copy(), 'A1': A1.copy(), 'A2': A2.copy(), 'A3': A3.copy(),
@@ -840,8 +928,25 @@ def process_measurement_file(filepath, show_plot=True, save_files=True):
             'A4': A4, 'A5': A5, 'A6': A6, 'A7': A7
         }
         
+        # Apply high-pass filter to all analog input signals
+        cutoff_hz = params['highpass_cutoff_hz']
+        A0 = apply_highpass_filter(A0, cutoff_hz, fs)
+        A1 = apply_highpass_filter(A1, cutoff_hz, fs)
+        A2 = apply_highpass_filter(A2, cutoff_hz, fs)
+        A3 = apply_highpass_filter(A3, cutoff_hz, fs)
+        A4 = apply_highpass_filter(A4, cutoff_hz, fs)
+        A5 = apply_highpass_filter(A5, cutoff_hz, fs)
+        A6 = apply_highpass_filter(A6, cutoff_hz, fs)
+        A7 = apply_highpass_filter(A7, cutoff_hz, fs)
+        
+        # Store filtered signals for comparison plots
+        filtered_signals = {
+            'A0': A0, 'A1': A1, 'A2': A2, 'A3': A3,
+            'A4': A4, 'A5': A5, 'A6': A6, 'A7': A7
+        }
+        
         # Show signal comparison plots
-        plot_signal_comparison(time, original_signals, corrected_signals, show_plot)
+        plot_signal_comparison(time, original_signals, corrected_signals, filtered_signals, show_plot)
         
         # Calculate derived signals
         signals = calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params)
@@ -865,6 +970,9 @@ def process_measurement_file(filepath, show_plot=True, save_files=True):
         # Generate Bode plots with both displacement and acceleration
         plot_bode_diagram(fft_results['frequencies'], tf_results['Gx'], tf_results['Gy'], 
                          tf_accel_results['Gx'], tf_accel_results['Gy'], show_plot)
+        
+        # Plot reconstructed time-domain signals
+        plot_reconstructed_time_signals(time, signals['u'], fft_results['X_full'], fft_results['Y_full'], show_plot)
         
         # Save results
         saved_files = save_results(fft_results['frequencies'], tf_results['Gx'], tf_results['Gy'], 
