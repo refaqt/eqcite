@@ -56,6 +56,11 @@ def get_system_parameters():
     # High-pass filter parameters
     highpass_cutoff_hz = 0.5  # High-pass filter cutoff frequency (Hz)
     
+    # Window parameters for raised cosine (Tukey) windowing
+    window_pre_seconds = 0.05   # Seconds before peak force to start window
+    window_post_seconds = 0.1   # Seconds after peak force to end window
+    window_beta = 0.25          # Tukey window roll-off (0 to 1)
+
     return {
         'L1': L1,
         'L2': L2,
@@ -66,7 +71,10 @@ def get_system_parameters():
         'v_u': v_u,
         'r_u': r_u,
         'bias_window_size': bias_window_size,
-        'highpass_cutoff_hz': highpass_cutoff_hz
+        'highpass_cutoff_hz': highpass_cutoff_hz,
+        'window_pre_seconds': window_pre_seconds,
+        'window_post_seconds': window_post_seconds,
+        'window_beta': window_beta
     }
 
 # =============================================================================
@@ -348,6 +356,96 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params):
         'theta_y': theta_y
     }
 
+
+def create_raised_cosine_window(time, force_signal, pre_seconds, post_seconds, beta):
+    """
+    Build a raised cosine (Tukey) window around the dominant force peak.
+
+    Parameters
+    ----------
+    time : array_like
+        Time vector (seconds), assumed monotonically increasing.
+    force_signal : array_like
+        Force signal used to detect the peak event.
+    pre_seconds : float
+        Duration before the peak time where the window becomes non-zero.
+    post_seconds : float
+        Duration after the peak time where the window remains non-zero.
+    beta : float
+        Tukey window roll-off factor (0 <= beta <= 1).
+
+    Returns
+    -------
+    np.ndarray
+        Window array matching the length of `time` with values in [0, 1].
+    dict
+        Metadata including peak time and window start/end times.
+    """
+    time = np.asarray(time)
+    force_signal = np.asarray(force_signal)
+
+    if time.shape != force_signal.shape:
+        raise ValueError("Time and force_signal must have the same shape for windowing")
+
+    if time.ndim != 1:
+        raise ValueError("Time array must be one-dimensional")
+
+    if len(time) < 2:
+        raise ValueError("Time array must contain at least two samples to create a window")
+
+    dt = time[1] - time[0]
+    if not np.isfinite(dt) or dt <= 0:
+        raise ValueError("Non-positive or non-finite sample interval detected")
+
+    peak_idx = int(np.argmax(np.abs(force_signal)))
+    peak_time = time[peak_idx]
+
+    pre_seconds = max(0.0, float(pre_seconds))
+    post_seconds = max(0.0, float(post_seconds))
+    beta = float(beta)
+    beta = min(max(beta, 0.0), 1.0)
+
+    start_time = peak_time - pre_seconds
+    end_time = peak_time + post_seconds
+
+    start_time = max(start_time, time[0])
+    end_time = min(end_time, time[-1])
+
+    if end_time <= start_time:
+        raise ValueError("Window end time must be greater than start time")
+
+    start_idx = int(np.searchsorted(time, start_time, side='left'))
+    end_idx = int(np.searchsorted(time, end_time, side='right'))
+
+    if end_idx <= start_idx + 1:
+        window = np.zeros_like(time, dtype=float)
+        window[peak_idx] = 1.0
+        return window, {
+            'peak_time': peak_time,
+            'start_time': peak_time,
+            'end_time': peak_time,
+            'peak_index': peak_idx,
+            'start_index': peak_idx,
+            'end_index': peak_idx + 1
+        }
+
+    segment_length = end_idx - start_idx
+    tukey_segment = signal.windows.tukey(segment_length, alpha=beta, sym=False)
+
+    window = np.zeros_like(time, dtype=float)
+    window[start_idx:end_idx] = tukey_segment
+
+    metadata = {
+        'peak_time': peak_time,
+        'start_time': time[start_idx],
+        'end_time': time[end_idx - 1],
+        'peak_index': peak_idx,
+        'start_index': start_idx,
+        'end_index': end_idx
+    }
+
+    return window, metadata
+
 # =============================================================================
 # FREQUENCY DOMAIN ANALYSIS
 # =============================================================================
@@ -508,7 +606,7 @@ def plot_signal_comparison(time, original_signals, corrected_signals, filtered_s
     plt.tight_layout()
     plt.show()
 
-def plot_time_domain_signals(time, u, x, y, show_plot=True):
+def plot_time_domain_signals(time, u, x, y, show_plot=True, window=None):
     """
     Plot time-domain signals u, x, y in a single figure with synchronized x-axes.
     
@@ -531,23 +629,38 @@ def plot_time_domain_signals(time, u, x, y, show_plot=True):
     fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
     
     # Plot force u
-    axes[0].plot(time, u, 'b-', linewidth=1)
+    axes[0].plot(time, u, 'b-', linewidth=1, label='u (windowed)')
     axes[0].set_ylabel('Force (N)')
     axes[0].set_title('Force Input u(t)')
     axes[0].grid(True, alpha=0.3)
+    if window is not None:
+        scale = np.max(np.abs(u))
+        scale = scale if scale > 0 else 1.0
+        axes[0].plot(time, window * scale, 'k--', linewidth=1, label='Window')
+        axes[0].legend(fontsize=8)
     
     # Plot x acceleration
-    axes[1].plot(time, x, 'r-', linewidth=1)
+    axes[1].plot(time, x, 'r-', linewidth=1, label='x (windowed)')
     axes[1].set_ylabel('Acceleration (m/s²)')
     axes[1].set_title('X-Direction Acceleration x(t)')
     axes[1].grid(True, alpha=0.3)
+    if window is not None:
+        scale = np.max(np.abs(x))
+        scale = scale if scale > 0 else 1.0
+        axes[1].plot(time, window * scale, 'k--', linewidth=1, label='Window')
+        axes[1].legend(fontsize=8)
     
     # Plot y acceleration
-    axes[2].plot(time, y, 'g-', linewidth=1)
+    axes[2].plot(time, y, 'g-', linewidth=1, label='y (windowed)')
     axes[2].set_xlabel('Time (s)')
     axes[2].set_ylabel('Acceleration (m/s²)')
     axes[2].set_title('Y-Direction Acceleration y(t)')
     axes[2].grid(True, alpha=0.3)
+    if window is not None:
+        scale = np.max(np.abs(y))
+        scale = scale if scale > 0 else 1.0
+        axes[2].plot(time, window * scale, 'k--', linewidth=1, label='Window')
+        axes[2].legend(fontsize=8)
     
     plt.tight_layout()
     plt.show()
@@ -950,12 +1063,28 @@ def process_measurement_file(filepath, show_plot=True, save_files=True):
         
         # Calculate derived signals
         signals = calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params)
+
+        # Build raised cosine window around primary force event
+        window, window_metadata = create_raised_cosine_window(
+            time,
+            signals['u'],
+            params['window_pre_seconds'],
+            params['window_post_seconds'],
+            params['window_beta']
+        )
+
+        # Apply window to derived signals used for FRF calculations
+        windowed_signals = {
+            'u': signals['u'] * window,
+            'x': signals['x'] * window,
+            'y': signals['y'] * window
+        }
         
-        # Plot time-domain signals
-        plot_time_domain_signals(time, signals['u'], signals['x'], signals['y'], show_plot)
+        # Plot time-domain signals with window overlay
+        plot_time_domain_signals(time, windowed_signals['u'], windowed_signals['x'], windowed_signals['y'], show_plot, window=window)
         
-        # Perform FFT analysis
-        fft_results = perform_fft_analysis(time, signals['u'], signals['x'], signals['y'])
+        # Perform FFT analysis using windowed signals
+        fft_results = perform_fft_analysis(time, windowed_signals['u'], windowed_signals['x'], windowed_signals['y'])
 
         # Generate PSD plot for input force
         plot_force_psd(fft_results['frequencies'], fft_results['U'],
@@ -972,7 +1101,7 @@ def process_measurement_file(filepath, show_plot=True, save_files=True):
                          tf_accel_results['Gx'], tf_accel_results['Gy'], show_plot)
         
         # Plot reconstructed time-domain signals
-        plot_reconstructed_time_signals(time, signals['u'], fft_results['X_full'], fft_results['Y_full'], show_plot)
+        plot_reconstructed_time_signals(time, windowed_signals['u'], fft_results['X_full'], fft_results['Y_full'], show_plot)
         
         # Save results
         saved_files = save_results(fft_results['frequencies'], tf_results['Gx'], tf_results['Gy'], 
@@ -986,7 +1115,9 @@ def process_measurement_file(filepath, show_plot=True, save_files=True):
             'metadata': metadata,
             'saved_files': saved_files,
             'sample_rate': 1 / fft_results['dt'],
-            'N_samples': fft_results['N']
+            'N_samples': fft_results['N'],
+            'window': window,
+            'window_metadata': window_metadata
         }
         
         return result
