@@ -93,7 +93,10 @@ def load_csv_file(filepath):
     Returns:
     --------
     tuple : (time_array, A0, A1, A2, A3, A4, A5, A6, A7)
-        Time array and 8 analog input arrays
+        Time array and 8 analog input arrays.
+        If the CSV contains only 7 analog channels (Time + A0–A6), A7 is returned
+        as a zero array with the same length as the time array so that downstream
+        code can always assume 8 channels are present.
         
     Raises:
     -------
@@ -115,11 +118,17 @@ def load_csv_file(filepath):
             skipinitialspace=True  # Skip leading whitespace
         )
         
-        # Validate column count
-        if df.shape[1] < 9:
-            raise ValueError(f"Expected 9 columns, found {df.shape[1]}")
+        # Validate column count: accept 8 or 9 columns
+        # 8 columns: Time + A0–A6 (7 analog channels)
+        # 9 columns: Time + A0–A7 (8 analog channels)
+        n_cols = df.shape[1]
+        if n_cols < 8 or n_cols > 9:
+            raise ValueError(
+                f"Expected 8 or 9 columns (Time + A0–A6 [+ optional A7]), "
+                f"found {n_cols}"
+            )
         
-        # Define column names for clarity
+        # Define column names for clarity (we may not have all of them)
         column_names = ['Time', 'A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7']
         
         # Convert each column to numeric with error handling
@@ -156,7 +165,12 @@ def load_csv_file(filepath):
         A4 = df.iloc[:, 5].values    # Column 5: A4
         A5 = df.iloc[:, 6].values    # Column 6: A5
         A6 = df.iloc[:, 7].values    # Column 7: A6
-        A7 = df.iloc[:, 8].values    # Column 8: A7
+
+        # Column 8 (A7) is optional; if it is not present, create a zero array
+        if n_cols >= 9:
+            A7 = df.iloc[:, 8].values    # Column 8: A7
+        else:
+            A7 = np.zeros_like(time)
         
         # Validate data is numeric and finite
         for i, arr in enumerate([time, A0, A1, A2, A3, A4, A5, A6, A7]):
@@ -338,15 +352,15 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params):
     r_a = params['r_a']
     
     # Force input (convert to Newtons)
-    u = A7 * r_u
+    u = A6 * r_u
     
     # Angular displacements
-    theta_x = -(A1 + A2 - A3 - A4) * np.sin(alpha) / (2 * L3)
-    theta_y = -(A1 - A2 - A3 + A4) * np.cos(alpha) / (2 * L3)
+    theta_x = -(A0 + A1 - A2 - A3) * np.sin(alpha) / (2 * L3)
+    theta_y = -(A0 - A1 - A2 + A3) * np.cos(alpha) / (2 * L3)
     
     # Linear accelerations (convert from voltage to m/s²)
-    x = (-(A1 - A2 + A3 - A4) * np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2) - A6) * r_a
-    y = ((A1 + A2 + A3 + A4) * np.sin(alpha) / 4 + theta_x * (L1 + L2 + L3 / 2) - A5) * r_a
+    x = (-(A0 - A1 + A2 - A3) * np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2) - A4) * r_a
+    y = ((A0 + A1 + A2 + A3) * np.sin(alpha) / 4 + theta_x * (L1 + L2 + L3 / 2) - A5) * r_a
     
     return {
         'u': u,
