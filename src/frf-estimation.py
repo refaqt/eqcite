@@ -37,15 +37,15 @@ def get_system_parameters():
     dict : System parameters including geometric, angular, and sensor calibration values
     """
     # Geometric parameters (meters)
-    L1 = 0.01      # (m) Length parameter 1
-    L2 = 0.05      # (m) Length parameter 2
-    L3 = 0.2       # (m) Length parameter 3
+    L1 = 0.02      # (m) Length parameter 1 - from tool tip to impact point
+    L2 = 0.078      # (m) Length parameter 2 - from impact point to bottom accelerometers
+    L3 = 0.160       # (m) Length parameter 3 - from bottom to top accelerometers
     
     # Angular parameter
-    alpha = 20 * np.pi / 180  # Angle in radians (20 degrees)
+    alpha = 20.123 * np.pi / 180  # Angle in radians (20 degrees)
     
     # Sensor calibration parameters
-    r_a = 5 * 9.81 / 10    # Accelerometer sensitivity (m/s²/V)
+    r_a = 1 * 9.81 / 0.2    # Accelerometer sensitivity (m/s²/V)
     m_u = 10               # IEPE signal conditioner multiplication factor
     v_u = 2.5e-3           # Force hammer sensitivity (mV/N)
     r_u = 1 / (v_u * m_u)  # Combined output sensitivity (N/V)
