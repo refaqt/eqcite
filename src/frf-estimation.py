@@ -325,7 +325,7 @@ def apply_highpass_filter(data, cutoff_hz, fs):
     
     return filtered_data
 
-def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params):
+def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measurement_case='case1'):
     """
     Calculate u, x, y, theta_x, theta_y from analog inputs.
     
@@ -335,6 +335,8 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params):
         Analog input arrays (Volts)
     params : dict
         System parameters dictionary
+    measurement_case : str
+        Measurement case identifier: 'case1', 'case2_x', or 'case2_y'
         
     Returns:
     --------
@@ -344,6 +346,8 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params):
         y : Y-direction acceleration (m/s²)
         theta_x : Angular displacement about X-axis (rad)
         theta_y : Angular displacement about Y-axis (rad)
+        x_tool : X-direction tool acceleration (m/s²) - only for case2_x
+        y_tool : Y-direction tool acceleration (m/s²) - only for case2_y
     """
     # Extract parameters
     L1 = params['L1']
@@ -360,17 +364,42 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params):
     theta_x = -(A0 + A1 - A2 - A3) / np.sin(alpha) / (2 * L3)
     theta_y = -(A0 - A1 - A2 + A3) / np.cos(alpha) / (2 * L3)
     
-    # Linear accelerations (convert from voltage to m/s²)
-    x = (-(A0 - A1 + A2 - A3) / np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2) - A4) * r_a
-    y = ((A0 + A1 + A2 + A3) / np.sin(alpha) / 4 + theta_x * (L1 + L2 + L3 / 2) - A5) * r_a
-    
-    return {
+    # Initialize result dictionary
+    result = {
         'u': u,
-        'x': x,
-        'y': y,
         'theta_x': theta_x,
         'theta_y': theta_y
     }
+    
+    # Case 1: Accelerometers only on z-slide (original equations)
+    if measurement_case == 'case1':
+        x = (-(A0 - A1 + A2 - A3) / np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2) - A4) * r_a
+        y = ((A0 + A1 + A2 + A3) / np.sin(alpha) / 4 + theta_x * (L1 + L2 + L3 / 2) - A5) * r_a
+        result['x'] = x
+        result['y'] = y
+    
+    # Case 2.1: Accelerometer at tool, X-direction
+    elif measurement_case == 'case2_x':
+        x = (-(A0 - A1 + A2 - A3) / np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2) - A4) * r_a
+        y = ((A0 + A1 + A2 + A3) / np.sin(alpha) / 4 + theta_x * (L1 + L2 + L3 / 2)) * r_a
+        x_tool = (A4 - A5) * r_a
+        result['x'] = x
+        result['y'] = y
+        result['x_tool'] = x_tool
+    
+    # Case 2.2: Accelerometer at tool, Y-direction
+    elif measurement_case == 'case2_y':
+        x = (-(A0 - A1 + A2 - A3) / np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2)) * r_a
+        y = ((A0 + A1 + A2 + A3) / np.sin(alpha) / 4 + theta_x * (L1 + L2 + L3 / 2) - A4) * r_a
+        y_tool = (A4 - A5) * r_a
+        result['x'] = x
+        result['y'] = y
+        result['y_tool'] = y_tool
+    
+    else:
+        raise ValueError(f"Unknown measurement case: {measurement_case}")
+    
+    return result
 
 
 def create_raised_cosine_window(time, force_signal, pre_seconds, post_seconds, beta):
@@ -466,11 +495,12 @@ def create_raised_cosine_window(time, force_signal, pre_seconds, post_seconds, b
 # FREQUENCY DOMAIN ANALYSIS
 # =============================================================================
 
-def perform_fft_analysis(time, u, x, y):
+def perform_fft_analysis(time, u, x, y, tool_signal=None):
     """
     Perform FFT and return frequencies, X, Y, U in frequency domain.
     Note: x and y are accelerations and will be double-integrated to displacements.
     Also returns acceleration FFT results for comparison.
+    Optionally processes tool acceleration signal if provided.
     
     Parameters:
     -----------
@@ -480,11 +510,14 @@ def perform_fft_analysis(time, u, x, y):
         Force signal (time domain)
     x, y : array_like
         Acceleration signals in time domain (m/s²)
+    tool_signal : array_like, optional
+        Tool acceleration signal in time domain (m/s²) - x_tool or y_tool
         
     Returns:
     --------
     dict : Dictionary containing frequency array and FFT results
         Includes both displacement (X, Y) and acceleration (X_accel, Y_accel) results
+        Optionally includes Tool and Tool_accel if tool_signal is provided
     """
     N = len(time)
     dt = time[1] - time[0]
@@ -516,6 +549,16 @@ def perform_fft_analysis(time, u, x, y):
     X[0] = 0
     Y[0] = 0
     
+    # Process tool signal if provided
+    if tool_signal is not None:
+        Tool_accel = np.fft.fft(tool_signal)
+        Tool = np.zeros_like(Tool_accel, dtype=complex)
+        Tool[1:] = Tool_accel[1:] * H[1:]
+        Tool[0] = 0
+    else:
+        Tool_accel = None
+        Tool = None
+    
     # Use only positive frequencies (including DC)
     positive_freq_mask = frequencies >= 0
     frequencies_pos = frequencies[positive_freq_mask]
@@ -525,7 +568,7 @@ def perform_fft_analysis(time, u, x, y):
     X_accel_pos = X_accel[positive_freq_mask]
     Y_accel_pos = Y_accel[positive_freq_mask]
     
-    return {
+    result = {
         'frequencies': frequencies_pos,
         'U': U_pos,
         'X': X_pos,
@@ -537,10 +580,21 @@ def perform_fft_analysis(time, u, x, y):
         'N': N,
         'dt': dt
     }
+    
+    # Add tool results if available
+    if tool_signal is not None:
+        Tool_pos = Tool[positive_freq_mask]
+        Tool_accel_pos = Tool_accel[positive_freq_mask]
+        result['Tool'] = Tool_pos
+        result['Tool_accel'] = Tool_accel_pos
+        result['Tool_full'] = Tool  # Full spectrum
+    
+    return result
 
-def calculate_transfer_functions(X, Y, U, threshold=1e-12):
+def calculate_transfer_functions(X, Y, U, threshold=1e-12, Tool=None):
     """
     Calculate Gx = X/U and Gy = Y/U transfer functions.
+    Optionally calculates G_tool = Tool/U if Tool is provided.
     
     Parameters:
     -----------
@@ -548,10 +602,13 @@ def calculate_transfer_functions(X, Y, U, threshold=1e-12):
         FFT results in frequency domain
     threshold : float
         Minimum magnitude threshold to avoid division by zero
+    Tool : array_like, optional
+        Tool displacement FFT results in frequency domain
         
     Returns:
     --------
     dict : Dictionary containing transfer functions Gx and Gy
+        Optionally includes G_tool if Tool is provided
     """
     # Avoid division by zero
     U_magnitude = np.abs(U)
@@ -569,11 +626,20 @@ def calculate_transfer_functions(X, Y, U, threshold=1e-12):
     Gx[~valid_mask] = np.nan
     Gy[~valid_mask] = np.nan
     
-    return {
+    result = {
         'Gx': Gx,
         'Gy': Gy,
         'valid_mask': valid_mask
     }
+    
+    # Calculate tool transfer function if provided
+    if Tool is not None:
+        G_tool = np.zeros_like(Tool, dtype=complex)
+        G_tool[valid_mask] = Tool[valid_mask] / U[valid_mask]
+        G_tool[~valid_mask] = np.nan
+        result['G_tool'] = G_tool
+    
+    return result
 
 # =============================================================================
 # VISUALIZATION
@@ -622,9 +688,10 @@ def plot_signal_comparison(time, original_signals, corrected_signals, filtered_s
     plt.tight_layout()
     plt.show()
 
-def plot_time_domain_signals(time, u, x, y, show_plot=True, window=None):
+def plot_time_domain_signals(time, u, x, y, show_plot=True, window=None, tool_accel=None, tool_label=None):
     """
     Plot time-domain signals u, x, y in a single figure with synchronized x-axes.
+    Optionally includes tool acceleration signal as 4th subplot.
     
     Parameters:
     -----------
@@ -638,11 +705,19 @@ def plot_time_domain_signals(time, u, x, y, show_plot=True, window=None):
         Y-direction acceleration (m/s²)
     show_plot : bool
         Whether to display the plot
+    window : array_like, optional
+        Window function to overlay on plots
+    tool_accel : array_like, optional
+        Tool acceleration signal (m/s²) - x_tool or y_tool
+    tool_label : str, optional
+        Label for tool acceleration (e.g., 'x_tool' or 'y_tool')
     """
     if not show_plot:
         return
     
-    fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+    # Determine number of subplots
+    n_plots = 4 if tool_accel is not None else 3
+    fig, axes = plt.subplots(n_plots, 1, figsize=(12, 10 + 2.5 * (n_plots - 3)), sharex=True)
     
     # Plot force u
     axes[0].plot(time, u, 'b-', linewidth=1, label='u (windowed)')
@@ -668,7 +743,6 @@ def plot_time_domain_signals(time, u, x, y, show_plot=True, window=None):
     
     # Plot y acceleration
     axes[2].plot(time, y, 'g-', linewidth=1, label='y (windowed)')
-    axes[2].set_xlabel('Time (s)')
     axes[2].set_ylabel('Acceleration (m/s²)')
     axes[2].set_title('Y-Direction Acceleration y(t)')
     axes[2].grid(True, alpha=0.3)
@@ -678,13 +752,30 @@ def plot_time_domain_signals(time, u, x, y, show_plot=True, window=None):
         axes[2].plot(time, window * scale, 'k--', linewidth=1, label='Window')
         axes[2].legend(fontsize=8)
     
+    # Plot tool acceleration if provided
+    if tool_accel is not None:
+        axes[3].plot(time, tool_accel, 'm-', linewidth=1, label=f'{tool_label} (windowed)')
+        axes[3].set_xlabel('Time (s)')
+        axes[3].set_ylabel('Acceleration (m/s²)')
+        title_label = tool_label.replace('_', ' ').title() if tool_label else 'Tool Acceleration'
+        axes[3].set_title(f'Tool Acceleration {title_label}(t)')
+        axes[3].grid(True, alpha=0.3)
+        if window is not None:
+            scale = np.max(np.abs(tool_accel))
+            scale = scale if scale > 0 else 1.0
+            axes[3].plot(time, window * scale, 'k--', linewidth=1, label='Window')
+            axes[3].legend(fontsize=8)
+    else:
+        axes[2].set_xlabel('Time (s)')
+    
     plt.tight_layout()
     plt.show()
 
-def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_plot=True):
+def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_plot=True, G_tool=None, tool_label=None):
     """
-    Generate Bode magnitude and phase plots for Gx and Gy in a 2x2 layout.
+    Generate Bode magnitude and phase plots for Gx and Gy in a 2x2 or 2x3 layout.
     Optionally overlay acceleration-based transfer functions.
+    Optionally includes tool compliance G_tool as 3rd column.
     
     Parameters:
     -----------
@@ -696,6 +787,10 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
         Acceleration-based transfer functions (complex)
     show_plot : bool
         Whether to display the plot
+    G_tool : array_like, optional
+        Tool compliance transfer function (complex)
+    tool_label : str, optional
+        Label for tool compliance (e.g., 'Gx_tool' or 'Gy_tool')
     """
     if not show_plot:
         return
@@ -729,6 +824,13 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
         Gx_accel_phase = np.degrees(Gx_accel_phase)
         Gy_accel_phase = np.degrees(Gy_accel_phase)
     
+    # Process tool compliance if provided
+    if G_tool is not None:
+        G_tool_mag = np.abs(G_tool)
+        G_tool_phase = np.angle(G_tool, deg=False)
+        G_tool_phase = np.unwrap(G_tool_phase)
+        G_tool_phase = np.degrees(G_tool_phase)
+    
     # Remove NaN values for plotting (displacement)
     valid_mask = np.isfinite(Gx_mag) & np.isfinite(Gy_mag) & np.isfinite(Gx_phase) & np.isfinite(Gy_phase)
     valid_freq = frequencies[valid_mask]
@@ -745,6 +847,13 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
         valid_Gy_accel_mag = Gy_accel_mag[valid_mask_accel]
         valid_Gx_accel_phase = Gx_accel_phase[valid_mask_accel]
         valid_Gy_accel_phase = Gy_accel_phase[valid_mask_accel]
+    
+    # Process tool data if provided
+    if G_tool is not None:
+        valid_mask_tool = np.isfinite(G_tool_mag) & np.isfinite(G_tool_phase)
+        valid_freq_tool = frequencies[valid_mask_tool]
+        valid_G_tool_mag = G_tool_mag[valid_mask_tool]
+        valid_G_tool_phase = G_tool_phase[valid_mask_tool]
     
     # Skip DC component for log plot
     if len(valid_freq) > 1 and valid_freq[0] == 0:
@@ -763,12 +872,22 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
             valid_Gx_accel_phase = valid_Gx_accel_phase[1:]
             valid_Gy_accel_phase = valid_Gy_accel_phase[1:]
     
-    # Create figure with 2x2 subplots
-    fig, ax = plt.subplots(2, 2, figsize=(14, 10))
+    # Skip DC component for tool data
+    if G_tool is not None:
+        if len(valid_freq_tool) > 1 and valid_freq_tool[0] == 0:
+            valid_freq_tool = valid_freq_tool[1:]
+            valid_G_tool_mag = valid_G_tool_mag[1:]
+            valid_G_tool_phase = valid_G_tool_phase[1:]
+    
+    # Determine layout: 2x3 if tool is provided, otherwise 2x2
+    n_cols = 3 if G_tool is not None else 2
+    fig, ax = plt.subplots(2, n_cols, figsize=(14 + 5 * (n_cols - 2), 10))
     
     # Link x-axes within each column for synchronized zooming
     ax[1, 0].sharex(ax[0, 0])  # Gx magnitude and phase
     ax[1, 1].sharex(ax[0, 1])  # Gy magnitude and phase
+    if G_tool is not None:
+        ax[1, 2].sharex(ax[0, 2])  # Tool magnitude and phase
     
     # Plot Gx magnitude (top-left)
     ax[0, 0].loglog(valid_freq, valid_Gx_mag, 'b-', linewidth=2, label='Gx (Displacement)')
@@ -779,7 +898,7 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
     ax[0, 0].grid(True, which="both", ls="-", alpha=0.3)
     ax[0, 0].legend()
     
-    # Plot Gy magnitude (top-right)
+    # Plot Gy magnitude (top-middle)
     ax[0, 1].loglog(valid_freq, valid_Gy_mag, 'r-', linewidth=2, label='Gy (Displacement)')
     if Gy_accel is not None:
         ax[0, 1].loglog(valid_freq_accel, valid_Gy_accel_mag, 'r--', linewidth=2, alpha=0.7, label='Gy (Acceleration)')
@@ -787,6 +906,15 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
     ax[0, 1].set_title('Compliance Gy (Y/U) - Magnitude')
     ax[0, 1].grid(True, which="both", ls="-", alpha=0.3)
     ax[0, 1].legend()
+    
+    # Plot tool magnitude (top-right) if provided
+    if G_tool is not None:
+        ax[0, 2].loglog(valid_freq_tool, valid_G_tool_mag, 'm-', linewidth=2, label=f'{tool_label} (Displacement)')
+        ax[0, 2].set_ylabel('Compliance (m/N)')
+        title_label = tool_label.replace('_', ' ').title() if tool_label else 'Tool Compliance'
+        ax[0, 2].set_title(f'Compliance {title_label} - Magnitude')
+        ax[0, 2].grid(True, which="both", ls="-", alpha=0.3)
+        ax[0, 2].legend()
     
     # Plot Gx phase (bottom-left)
     ax[1, 0].semilogx(valid_freq, valid_Gx_phase, 'b-', linewidth=2, label='Gx (Displacement)')
@@ -799,7 +927,7 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
     ax[1, 0].legend()
     # Removed fixed y-limits to allow unwrapped phase to display properly
     
-    # Plot Gy phase (bottom-right)
+    # Plot Gy phase (bottom-middle)
     ax[1, 1].semilogx(valid_freq, valid_Gy_phase, 'r-', linewidth=2, label='Gy (Displacement)')
     if Gy_accel is not None:
         ax[1, 1].semilogx(valid_freq_accel, valid_Gy_accel_phase, 'r--', linewidth=2, alpha=0.7, label='Gy (Acceleration)')
@@ -810,13 +938,24 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
     ax[1, 1].legend()
     # Removed fixed y-limits to allow unwrapped phase to display properly
     
+    # Plot tool phase (bottom-right) if provided
+    if G_tool is not None:
+        ax[1, 2].semilogx(valid_freq_tool, valid_G_tool_phase, 'm-', linewidth=2, label=f'{tool_label} (Displacement)')
+        ax[1, 2].set_xlabel('Frequency (Hz)')
+        ax[1, 2].set_ylabel('Phase (degrees)')
+        title_label = tool_label.replace('_', ' ').title() if tool_label else 'Tool Compliance'
+        ax[1, 2].set_title(f'Compliance {title_label} - Phase')
+        ax[1, 2].grid(True, which="both", ls="-", alpha=0.3)
+        ax[1, 2].legend()
+    
     plt.tight_layout()
     plt.show()
 
-def plot_reconstructed_time_signals(time, u, X_freq, Y_freq, show_plot=True):
+def plot_reconstructed_time_signals(time, u, X_freq, Y_freq, show_plot=True, Tool_freq=None, tool_label=None):
     """
     Plot time-domain signals: u (force), x_pos, and y_pos.
     x_pos and y_pos are reconstructed from frequency domain using IFFT.
+    Optionally includes tool displacement as 4th subplot.
     
     Parameters:
     -----------
@@ -830,6 +969,10 @@ def plot_reconstructed_time_signals(time, u, X_freq, Y_freq, show_plot=True):
         Y displacement in frequency domain (complex, full spectrum)
     show_plot : bool
         Whether to display the plot
+    Tool_freq : array_like, optional
+        Tool displacement in frequency domain (complex, full spectrum)
+    tool_label : str, optional
+        Label for tool displacement (e.g., 'x_tool' or 'y_tool')
     """
     if not show_plot:
         return
@@ -838,8 +981,9 @@ def plot_reconstructed_time_signals(time, u, X_freq, Y_freq, show_plot=True):
     x_pos = np.real(np.fft.ifft(X_freq))
     y_pos = np.real(np.fft.ifft(Y_freq))
     
-    # Create figure with 3 subplots and shared x-axis
-    fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+    # Determine number of subplots
+    n_plots = 4 if Tool_freq is not None else 3
+    fig, axes = plt.subplots(n_plots, 1, figsize=(12, 10 + 2.5 * (n_plots - 3)), sharex=True)
     
     # Plot force u
     axes[0].plot(time, u, 'b-', linewidth=1)
@@ -855,10 +999,21 @@ def plot_reconstructed_time_signals(time, u, X_freq, Y_freq, show_plot=True):
     
     # Plot y displacement
     axes[2].plot(time, y_pos, 'g-', linewidth=1)
-    axes[2].set_xlabel('Time (s)')
     axes[2].set_ylabel('Displacement (m)')
     axes[2].set_title('Y-Direction Displacement y_pos(t)')
     axes[2].grid(True, alpha=0.3)
+    
+    # Plot tool displacement if provided
+    if Tool_freq is not None:
+        tool_pos = np.real(np.fft.ifft(Tool_freq))
+        axes[3].plot(time, tool_pos, 'm-', linewidth=1)
+        axes[3].set_xlabel('Time (s)')
+        axes[3].set_ylabel('Displacement (m)')
+        title_label = tool_label.replace('_', ' ').title() if tool_label else 'Tool'
+        axes[3].set_title(f'{title_label}-Direction Displacement {tool_label}_pos(t)')
+        axes[3].grid(True, alpha=0.3)
+    else:
+        axes[2].set_xlabel('Time (s)')
     
     plt.tight_layout()
     plt.show()
@@ -1004,7 +1159,7 @@ def save_results(frequencies, Gx, Gy, original_filepath, save_files=True):
 # MAIN PROCESSING
 # =============================================================================
 
-def process_measurement_file(filepath, show_plot=True, save_files=True):
+def process_measurement_file(filepath, measurement_case='case1', show_plot=True, save_files=True):
     """
     Main function to process a single measurement file.
     
@@ -1012,6 +1167,8 @@ def process_measurement_file(filepath, show_plot=True, save_files=True):
     -----------
     filepath : str
         Path to input CSV file
+    measurement_case : str
+        Measurement case identifier: 'case1', 'case2_x', or 'case2_y'
     show_plot : bool
         Whether to display Bode plots
     save_files : bool
@@ -1020,6 +1177,7 @@ def process_measurement_file(filepath, show_plot=True, save_files=True):
     Returns:
     --------
     dict : Contains frequencies, Gx, Gy, and metadata
+        Optionally includes G_tool for Case 2
     """
     try:
         # Load system parameters
@@ -1077,8 +1235,8 @@ def process_measurement_file(filepath, show_plot=True, save_files=True):
         # Show signal comparison plots
         plot_signal_comparison(time, original_signals, corrected_signals, filtered_signals, show_plot)
         
-        # Calculate derived signals
-        signals = calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params)
+        # Calculate derived signals with measurement case
+        signals = calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measurement_case)
 
         # Build window around primary force event (raised cosine or no window)
         if params['use_raised_cosine_window']:
@@ -1109,28 +1267,59 @@ def process_measurement_file(filepath, show_plot=True, save_files=True):
             'y': signals['y'] * window
         }
         
+        # Extract tool signal if present and apply window
+        tool_signal = None
+        tool_label = None
+        if measurement_case == 'case2_x':
+            tool_signal = signals.get('x_tool', None)
+            if tool_signal is not None:
+                tool_signal = tool_signal * window
+                tool_label = 'x_tool'
+        elif measurement_case == 'case2_y':
+            tool_signal = signals.get('y_tool', None)
+            if tool_signal is not None:
+                tool_signal = tool_signal * window
+                tool_label = 'y_tool'
+        
         # Plot time-domain signals with window overlay
-        plot_time_domain_signals(time, windowed_signals['u'], windowed_signals['x'], windowed_signals['y'], show_plot, window=window)
+        plot_time_domain_signals(time, windowed_signals['u'], windowed_signals['x'], 
+                                windowed_signals['y'], show_plot, window=window,
+                                tool_accel=tool_signal, tool_label=tool_label)
         
         # Perform FFT analysis using windowed signals
-        fft_results = perform_fft_analysis(time, windowed_signals['u'], windowed_signals['x'], windowed_signals['y'])
+        fft_results = perform_fft_analysis(time, windowed_signals['u'], windowed_signals['x'], 
+                                           windowed_signals['y'], tool_signal=tool_signal)
 
         # Generate PSD plot for input force
         plot_force_psd(fft_results['frequencies'], fft_results['U'],
                        fft_results['dt'], fft_results['N'], show_plot)
 
         # Calculate displacement transfer functions
-        tf_results = calculate_transfer_functions(fft_results['X'], fft_results['Y'], fft_results['U'])
+        Tool_freq = fft_results.get('Tool', None)
+        tf_results = calculate_transfer_functions(fft_results['X'], fft_results['Y'], 
+                                                  fft_results['U'], Tool=Tool_freq)
         
         # Calculate acceleration transfer functions
-        tf_accel_results = calculate_transfer_functions(fft_results['X_accel'], fft_results['Y_accel'], fft_results['U'])
+        tf_accel_results = calculate_transfer_functions(fft_results['X_accel'], fft_results['Y_accel'], 
+                                                       fft_results['U'])
+        
+        # Determine tool label for Bode plot
+        tool_bode_label = None
+        if measurement_case == 'case2_x':
+            tool_bode_label = 'Gx_tool'
+        elif measurement_case == 'case2_y':
+            tool_bode_label = 'Gy_tool'
         
         # Generate Bode plots with both displacement and acceleration
         plot_bode_diagram(fft_results['frequencies'], tf_results['Gx'], tf_results['Gy'], 
-                         tf_accel_results['Gx'], tf_accel_results['Gy'], show_plot)
+                         tf_accel_results['Gx'], tf_accel_results['Gy'], show_plot,
+                         G_tool=tf_results.get('G_tool', None), tool_label=tool_bode_label)
         
         # Plot reconstructed time-domain signals
-        plot_reconstructed_time_signals(time, windowed_signals['u'], fft_results['X_full'], fft_results['Y_full'], show_plot)
+        Tool_freq_full = fft_results.get('Tool_full', None)
+        plot_reconstructed_time_signals(time, windowed_signals['u'], fft_results['X_full'], 
+                                       fft_results['Y_full'], show_plot,
+                                       Tool_freq=Tool_freq_full, tool_label=tool_label)
         
         # Save results
         saved_files = save_results(fft_results['frequencies'], tf_results['Gx'], tf_results['Gy'], 
@@ -1149,6 +1338,10 @@ def process_measurement_file(filepath, show_plot=True, save_files=True):
             'window_metadata': window_metadata
         }
         
+        # Add tool transfer function if present
+        if 'G_tool' in tf_results:
+            result['G_tool'] = tf_results['G_tool']
+        
         return result
         
     except Exception as e:
@@ -1157,6 +1350,112 @@ def process_measurement_file(filepath, show_plot=True, save_files=True):
 # =============================================================================
 # USER INTERFACE
 # =============================================================================
+
+def select_measurement_case(root=None):
+    """
+    Display dialog for user to select measurement case.
+    
+    Parameters:
+    -----------
+    root : tk.Tk, optional
+        Root window to use. If None, creates a new root window.
+    
+    Returns:
+    --------
+    str : Case identifier ('case1', 'case2_x', or 'case2_y')
+        Returns None if user cancels
+    """
+    # Use provided root or create new one
+    created_root = False
+    if root is None:
+        root = tk.Tk()
+        root.withdraw()  # Hide root window if we created it
+        created_root = True
+    
+    # Create dialog window
+    dialog = tk.Toplevel(root)
+    dialog.title("Select Measurement Case")
+    dialog.geometry("400x200")
+    
+    # Make dialog modal
+    dialog.grab_set()
+    
+    # Bring dialog to front and give it focus
+    dialog.lift()
+    dialog.focus_force()
+    
+    # Update root to ensure dialog is rendered
+    root.update()
+    
+    # Variable to store result
+    result = [None]
+    
+    def select_case1():
+        result[0] = 'case1'
+        dialog.destroy()
+    
+    def select_case2():
+        # Close main dialog
+        dialog.destroy()
+        
+        # Create sub-dialog for Case 2 direction
+        sub_dialog = tk.Toplevel(root)
+        sub_dialog.title("Select Tool Direction")
+        sub_dialog.geometry("350x150")
+        sub_dialog.grab_set()
+        
+        # Bring sub-dialog to front and give it focus
+        sub_dialog.lift()
+        sub_dialog.focus_force()
+        root.update()
+        
+        tk.Label(sub_dialog, text="Select accelerometer direction at tool:", 
+                font=("Arial", 10)).pack(pady=10)
+        
+        def select_x():
+            result[0] = 'case2_x'
+            sub_dialog.destroy()
+        
+        def select_y():
+            result[0] = 'case2_y'
+            sub_dialog.destroy()
+        
+        btn_x = tk.Button(sub_dialog, text="2.1 X-direction", command=select_x, 
+                         width=20, height=2)
+        btn_x.pack(pady=5)
+        
+        btn_y = tk.Button(sub_dialog, text="2.2 Y-direction", command=select_y, 
+                         width=20, height=2)
+        btn_y.pack(pady=5)
+        
+        # Update to ensure buttons are visible
+        root.update()
+        
+        sub_dialog.wait_window()
+    
+    # Main dialog content
+    tk.Label(dialog, text="Select measurement case:", 
+            font=("Arial", 12, "bold")).pack(pady=15)
+    
+    btn_case1 = tk.Button(dialog, text="Case 1: Accelerometers only on z-slide", 
+                         command=select_case1, width=35, height=2)
+    btn_case1.pack(pady=10)
+    
+    btn_case2 = tk.Button(dialog, text="Case 2: Accelerometer at tool", 
+                         command=select_case2, width=35, height=2)
+    btn_case2.pack(pady=10)
+    
+    # Update to ensure dialog content is visible
+    root.update()
+    
+    # Wait for dialog to close
+    dialog.wait_window()
+    
+    # Only destroy root if we created it
+    if created_root:
+        root.destroy()
+    
+    return result[0]
 
 def main():
     """
@@ -1167,6 +1466,15 @@ def main():
     root.withdraw()
     
     try:
+        # Select measurement case before file selection
+        measurement_case = select_measurement_case(root)
+        
+        if not measurement_case:
+            print("No measurement case selected. Exiting.")
+            return
+        
+        print(f"Selected measurement case: {measurement_case}")
+        
         # File selection dialog
         filepath = filedialog.askopenfilename(
             title="Select CSV measurement file",
@@ -1179,12 +1487,8 @@ def main():
         
         print(f"Processing file: {filepath}")
         
-        # User options
-        show_plot = messagebox.askyesno("Display Options", "Do you want to display the Bode plots?")
-        save_files = messagebox.askyesno("Save Options", "Do you want to save the output CSV files?")
-        
-        # Process the file
-        result = process_measurement_file(filepath, show_plot, save_files)
+        # Process the file (always show plots, don't save yet)
+        result = process_measurement_file(filepath, measurement_case=measurement_case, show_plot=True, save_files=False)
         
         # Display results
         print(f"\nProcessing completed successfully!")
@@ -1192,15 +1496,20 @@ def main():
         print(f"Number of samples: {result['N_samples']}")
         print(f"Frequency range: {result['frequencies'][0]:.2f} - {result['frequencies'][-1]:.2f} Hz")
         
-        if result['saved_files']:
-            print(f"\nSaved files:")
-            for file in result['saved_files']:
-                print(f"  - {file}")
-        
         print(f"\nMetadata:")
         print(f"  Date/Time: {result['metadata']['date_time']}")
         print(f"  Position: X={result['metadata']['x_position']}, Y={result['metadata']['y_position']}, Z={result['metadata']['z_position']}")
         print(f"  Direction: {result['metadata']['direction']}")
+        
+        # Ask user if they want to save CSV files
+        save_files = messagebox.askyesno("Save Options", "Do you want to save the output CSV files?")
+        
+        if save_files:
+            saved_files = save_results(result['frequencies'], result['Gx'], result['Gy'], filepath, save_files=True)
+            result['saved_files'] = saved_files
+            print(f"\nSaved files:")
+            for file in saved_files:
+                print(f"  - {file}")
         
     except Exception as e:
         messagebox.showerror("Error", f"An error occurred: {str(e)}")
