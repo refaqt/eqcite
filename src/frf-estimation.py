@@ -57,6 +57,7 @@ def get_system_parameters():
     highpass_cutoff_hz = 0.5  # High-pass filter cutoff frequency (Hz)
     
     # Window parameters for raised cosine (Tukey) windowing
+    use_raised_cosine_window = False  # Toggle to enable/disable raised cosine window
     window_pre_seconds = 0.05   # Seconds before peak force to start window
     window_post_seconds = 0.1   # Seconds after peak force to end window
     window_beta = 0.25          # Tukey window roll-off (0 to 1)
@@ -72,6 +73,7 @@ def get_system_parameters():
         'r_u': r_u,
         'bias_window_size': bias_window_size,
         'highpass_cutoff_hz': highpass_cutoff_hz,
+        'use_raised_cosine_window': use_raised_cosine_window,
         'window_pre_seconds': window_pre_seconds,
         'window_post_seconds': window_post_seconds,
         'window_beta': window_beta
@@ -355,12 +357,12 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params):
     u = A6 * r_u
     
     # Angular displacements
-    theta_x = -(A0 + A1 - A2 - A3) * np.sin(alpha) / (2 * L3)
-    theta_y = -(A0 - A1 - A2 + A3) * np.cos(alpha) / (2 * L3)
+    theta_x = -(A0 + A1 - A2 - A3) / np.sin(alpha) / (2 * L3)
+    theta_y = -(A0 - A1 - A2 + A3) / np.cos(alpha) / (2 * L3)
     
     # Linear accelerations (convert from voltage to m/s²)
-    x = (-(A0 - A1 + A2 - A3) * np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2) - A4) * r_a
-    y = ((A0 + A1 + A2 + A3) * np.sin(alpha) / 4 + theta_x * (L1 + L2 + L3 / 2) - A5) * r_a
+    x = (-(A0 - A1 + A2 - A3) / np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2) - A4) * r_a
+    y = ((A0 + A1 + A2 + A3) / np.sin(alpha) / 4 + theta_x * (L1 + L2 + L3 / 2) - A5) * r_a
     
     return {
         'u': u,
@@ -1078,14 +1080,27 @@ def process_measurement_file(filepath, show_plot=True, save_files=True):
         # Calculate derived signals
         signals = calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params)
 
-        # Build raised cosine window around primary force event
-        window, window_metadata = create_raised_cosine_window(
-            time,
-            signals['u'],
-            params['window_pre_seconds'],
-            params['window_post_seconds'],
-            params['window_beta']
-        )
+        # Build window around primary force event (raised cosine or no window)
+        if params['use_raised_cosine_window']:
+            # Build raised cosine window around primary force event
+            window, window_metadata = create_raised_cosine_window(
+                time,
+                signals['u'],
+                params['window_pre_seconds'],
+                params['window_post_seconds'],
+                params['window_beta']
+            )
+        else:
+            # No windowing: use all-ones window (no effect on signals)
+            window = np.ones_like(time, dtype=float)
+            window_metadata = {
+                'peak_time': time[len(time) // 2],  # Approximate midpoint
+                'start_time': time[0],
+                'end_time': time[-1],
+                'peak_index': len(time) // 2,
+                'start_index': 0,
+                'end_index': len(time)
+            }
 
         # Apply window to derived signals used for FRF calculations
         windowed_signals = {

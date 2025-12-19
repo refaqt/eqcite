@@ -21,6 +21,7 @@ from pathlib import Path
 import warnings
 from scipy import signal
 import time as time_module
+import sys
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
@@ -76,9 +77,83 @@ def get_system_parameters():
 # DATA LOADING FUNCTIONS
 # =============================================================================
 
+def parse_sample_rate_from_header(filepath, num_channels):
+    """
+    Parse sample rate from CSV file header.
+    
+    The header contains a line like "Samples per sec. = 30000/1" where 30000
+    is the total samples per second for all channels. This function extracts
+    that value and divides by the number of channels to get the per-channel
+    sample rate.
+    
+    Parameters:
+    -----------
+    filepath : str
+        Path to the CSV file
+    num_channels : int
+        Number of data channels (excluding time column)
+        
+    Returns:
+    --------
+    float : Per-channel sample rate in Hz
+    
+    Raises:
+    -------
+    ValueError : If sample rate cannot be found in header
+    FileNotFoundError : If file doesn't exist
+    """
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"File not found: {filepath}")
+    
+    # Read first 5 lines to get header
+    try:
+        with open(filepath, 'r') as f:
+            header_lines = [f.readline() for _ in range(5)]
+    except Exception as e:
+        raise ValueError(f"Error reading CSV file header: {e}")
+    
+    # Search for sample rate in header lines
+    # Pattern: "Samples per sec. = 30000/1" or similar variations
+    pattern = r'Samples\s+per\s+sec\.\s*=\s*(\d+)/\d+'
+    
+    for line in header_lines:
+        match = re.search(pattern, line, re.IGNORECASE)
+        if match:
+            total_sample_rate = float(match.group(1))
+            # Divide by number of channels to get per-channel sample rate
+            per_channel_rate = total_sample_rate / num_channels
+            return per_channel_rate
+    
+    # If not found, try alternative patterns
+    alternative_patterns = [
+        r'Sample\s+rate\s*[:=]\s*(\d+)',  # "Sample rate: 30000" or "Sample rate = 30000"
+        r'(\d+)\s*samples?\s*per\s*second',  # "30000 samples per second"
+        r'(\d+)\s*Hz',  # "30000 Hz" (though this would already be per-channel)
+    ]
+    
+    for pattern in alternative_patterns:
+        for line in header_lines:
+            match = re.search(pattern, line, re.IGNORECASE)
+            if match:
+                total_sample_rate = float(match.group(1))
+                # Assume this is total rate, divide by channels
+                per_channel_rate = total_sample_rate / num_channels
+                return per_channel_rate
+    
+    # If still not found, raise error
+    raise ValueError(
+        f"Could not find sample rate in CSV header. "
+        f"Expected format: 'Samples per sec. = 30000/1' or similar. "
+        f"Header lines: {header_lines}"
+    )
+
 def load_csv_file(filepath):
     """
-    Load and parse CSV file, return time array and analog input arrays (A0-A5).
+    Load and parse CSV file, return time array, analog input arrays (A0-A5), and sample rate.
+    
+    The function requires at least 7 columns (Time + A0-A5). If more columns are
+    present, only the first 7 columns are used and extra columns are discarded.
+    The sample rate is extracted from the CSV header.
     
     Parameters:
     -----------
@@ -87,18 +162,23 @@ def load_csv_file(filepath):
         
     Returns:
     --------
-    tuple : (time_array, A0, A1, A2, A3, A4, A5)
-        Time array and 6 analog input arrays.
+    tuple : (time_array, A0, A1, A2, A3, A4, A5, fs)
+        Time array, 6 analog input arrays, and sample rate in Hz.
         
     Raises:
     -------
-    ValueError : If file format is invalid or data cannot be parsed
+    ValueError : If file format is invalid, data cannot be parsed, fewer than 7 columns are present,
+                  or sample rate cannot be found in header
     FileNotFoundError : If file doesn't exist
     """
     try:
         # Check if file exists
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"File not found: {filepath}")
+        
+        # Parse sample rate from header (6 channels: A0-A5)
+        num_channels = 6
+        fs = parse_sample_rate_from_header(filepath, num_channels)
         
         # Read CSV file, skipping first 5 header lines
         df = pd.read_csv(
@@ -110,12 +190,18 @@ def load_csv_file(filepath):
             skipinitialspace=True  # Skip leading whitespace
         )
         
-        # Validate column count: require exactly 7 columns (Time + A0-A5)
+        # Validate column count: require at least 7 columns (Time + A0-A5)
         n_cols = df.shape[1]
-        if n_cols != 7:
+        if n_cols < 7:
             raise ValueError(
-                f"Expected 7 columns (Time + A0–A5), found {n_cols}"
+                f"Expected at least 7 columns (Time + A0–A5), found {n_cols}"
             )
+        
+        # If more than 7 columns are present, extract only the first 7
+        if n_cols > 7:
+            print(f"Warning: CSV file has {n_cols} columns. Using only first 7 columns (Time + A0–A5). "
+                  f"Discarding {n_cols - 7} extra column(s).")
+            df = df.iloc[:, :7]  # Keep only first 7 columns
         
         # Define column names for clarity
         column_names = ['Time', 'A0', 'A1', 'A2', 'A3', 'A4', 'A5']
@@ -161,7 +247,7 @@ def load_csv_file(filepath):
                     f"Column {i} has {nan_count} non-finite values (NaN or Inf)"
                 )
         
-        return time, A0, A1, A2, A3, A4, A5
+        return time, A0, A1, A2, A3, A4, A5, fs
         
     except pd.errors.EmptyDataError:
         raise ValueError("CSV file is empty or malformed")
@@ -369,7 +455,7 @@ def calculate_windowed_frequency_amplitude(time, x, y, theta_x, theta_y, window_
         Matrix with columns [time, frequency, amplitude_X, amplitude_Y, 
                             amplitude_theta_X, amplitude_theta_Y]
     output2 : np.ndarray
-        Filtered output1 where amplitude_X > 0.5 m/s²
+        Same as output1 (no filtering applied)
     debug_data : dict
         Debug data for interactive plotting (keyed by center_idx)
     """
@@ -405,8 +491,13 @@ def calculate_windowed_frequency_amplitude(time, x, y, theta_x, theta_y, window_
     print(f"Window samples: {window_samples}")
     print(f"Processing {n_samples} samples...")
     
+    # Progress tracking
+    total_iterations = n_samples - window_samples + 1
+    progress_interval = max(1, total_iterations // 100)  # Update every 1% or at least every iteration
+    start_time = time_module.time()
+    
     # Loop through signal with sliding window
-    for i in range(n_samples - window_samples + 1):
+    for i in range(total_iterations):
         center_idx = i + window_samples // 2
         
         # Calculate frequency from X signal only
@@ -500,6 +591,22 @@ def calculate_windowed_frequency_amplitude(time, x, y, theta_x, theta_y, window_
             # Store amplitude at window center position
             if center_idx < n_samples:
                 amplitude_arrays[sig_name][center_idx] = amplitude
+        
+        # Progress update
+        if (i + 1) % progress_interval == 0 or (i + 1) == total_iterations:
+            elapsed_time = time_module.time() - start_time
+            progress_pct = 100.0 * (i + 1) / total_iterations
+            if i > 0:
+                estimated_total = elapsed_time * total_iterations / (i + 1)
+                remaining_time = estimated_total - elapsed_time
+                print(f"\rProgress: {progress_pct:.1f}% ({i+1}/{total_iterations}) | "
+                      f"Elapsed: {elapsed_time:.1f}s | Remaining: {remaining_time:.1f}s", 
+                      end='', flush=True)
+            else:
+                print(f"\rProgress: {progress_pct:.1f}% ({i+1}/{total_iterations}) | "
+                      f"Elapsed: {elapsed_time:.1f}s", end='', flush=True)
+    
+    print()  # New line after progress updates
     
     # Create output1: matrix with all data
     output1 = np.column_stack([
@@ -511,13 +618,11 @@ def calculate_windowed_frequency_amplitude(time, x, y, theta_x, theta_y, window_
         amplitude_theta_y
     ])
     
-    # Create output2: filter where amplitude_X > 0.5 m/s²
-    mask = amplitude_x > 0.5
-    output2 = output1[mask]
+    # Create output2: same as output1 (no filtering applied)
+    output2 = output1.copy()
     
     print(f"Output1 shape: {output1.shape}")
-    print(f"Output2 shape (filtered): {output2.shape}")
-    print(f"Filtered {np.sum(mask)} points where amplitude_X > 0.5 m/s²")
+    print(f"Output2 shape: {output2.shape}")
     
     return output1, output2, debug_data
 
@@ -670,7 +775,7 @@ def plot_signal_comparison(time, original_signals, corrected_signals, filtered_s
         ax.legend(fontsize=8)
     
     plt.tight_layout()
-    plt.show()
+    plt.show(block=False)
 
 def plot_accelerations(time, x, y, theta_x, theta_y, show_plot=True):
     """
@@ -719,7 +824,7 @@ def plot_accelerations(time, x, y, theta_x, theta_y, show_plot=True):
     axes[1, 1].grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.show()
+    plt.show(block=False)
 
 class FrequencyPlotHandler:
     """Handler class for interactive frequency plot with click debugging."""
@@ -869,9 +974,9 @@ Validation Checks:
         plt.tight_layout()
         plt.show()
 
-def plot_frequency_measurement(time, frequency_array, window_duration, debug_data=None, show_plot=True):
+def plot_frequency_measurement(time, frequency_array, amplitude_array, input_force_array, window_duration, debug_data=None, show_plot=True):
     """
-    Plot frequency measurement with interactive debugging.
+    Plot frequency measurement, amplitude, and input force with interactive debugging.
     
     Parameters:
     -----------
@@ -879,30 +984,54 @@ def plot_frequency_measurement(time, frequency_array, window_duration, debug_dat
         Time array in seconds
     frequency_array : array_like
         Frequency array in Hz
+    amplitude_array : array_like
+        Amplitude array (typically amplitude_X)
+    input_force_array : array_like
+        Input force array (U) in Newtons
     window_duration : float
         Window duration in seconds
     debug_data : dict, optional
         Debug data for interactive plotting (keyed by center_idx)
     show_plot : bool
         Whether to display the plot
+        
+    Returns:
+    --------
+    matplotlib.figure.Figure or None
+        The figure object if show_plot is True, None otherwise
     """
     if not show_plot:
-        return
+        return None
     
-    # Create figure with subplots
-    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+    # Create figure with 3 subplots (stacked vertically)
+    fig, axes = plt.subplots(3, 1, figsize=(12, 12), sharex=True)
+    ax1 = axes[0]  # Top subplot for spindle speed
+    ax2 = axes[1]  # Middle subplot for amplitude
+    ax3 = axes[2]  # Bottom subplot for input force
     
     # Convert frequency to spindle speed (RPM)
     spindle_rpm = frequency_array * 60
     
-    # Plot spindle speed vs time
-    ax.plot(time, spindle_rpm, 'r-', linewidth=1.0)
-    ax.set_xlabel('Time (s)', fontsize=12)
-    ax.set_ylabel('Spindle Speed (RPM)', fontsize=12)
-    ax.set_title(f'Frequency Measurement (Window: {window_duration}s)', 
+    # Top subplot: Plot spindle speed vs time
+    ax1.plot(time, spindle_rpm, 'r-', linewidth=1.0)
+    ax1.set_ylabel('Spindle Speed (RPM)', fontsize=12)
+    ax1.set_title(f'Frequency, Amplitude, and Input Force Measurement (Window: {window_duration}s)', 
                  fontsize=13, fontweight='bold')
-    ax.grid(True, alpha=0.3)
-    ax.axhline(y=0, color='k', linestyle='--', alpha=0.5, linewidth=0.5)
+    ax1.grid(True, alpha=0.3)
+    ax1.axhline(y=0, color='k', linestyle='--', alpha=0.5, linewidth=0.5)
+    
+    # Middle subplot: Plot amplitude vs time
+    ax2.plot(time, amplitude_array, 'b-', linewidth=1.0)
+    ax2.set_ylabel('Amplitude (m/s²)', fontsize=12)
+    ax2.grid(True, alpha=0.3)
+    ax2.axhline(y=0, color='k', linestyle='--', alpha=0.5, linewidth=0.5)
+    
+    # Bottom subplot: Plot input force vs time
+    ax3.plot(time, input_force_array, 'g-', linewidth=1.0)
+    ax3.set_xlabel('Time (s)', fontsize=12)
+    ax3.set_ylabel('Input Force (N)', fontsize=12)
+    ax3.grid(True, alpha=0.3)
+    ax3.axhline(y=0, color='k', linestyle='--', alpha=0.5, linewidth=0.5)
     
     # Calculate statistics
     valid_freqs = frequency_array[frequency_array > 0]
@@ -930,33 +1059,18 @@ def plot_frequency_measurement(time, frequency_array, window_duration, debug_dat
              bbox=dict(boxstyle="round,pad=0.5", facecolor="wheat", alpha=0.7),
              verticalalignment='bottom')
     
-    # Add interactive debugging if debug_data is available
-    if debug_data is not None:
-        handler = FrequencyPlotHandler(time, frequency_array, 1.0 / (time[1] - time[0]) if len(time) > 1 else 1.0)
-        handler.debug_data = debug_data
-        handler.fig = fig
-        handler.ax1 = ax
-        
-        # Connect click event handler
-        fig.canvas.mpl_connect('button_press_event', handler.on_click)
-        
-        # Add instruction text
-        fig.text(0.5, 0.02, "Click on frequency plot to debug frequency calculation", 
-                 fontsize=10, ha='center', va='bottom',
-                 bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7))
-    
     plt.tight_layout()
-    plt.subplots_adjust(bottom=0.15)
     
     # Print statistics to console
     print("\nFrequency Measurement Statistics:")
     for k, v in stats.items():
         print(f"  {k}: {v}")
     
-    if debug_data is not None:
-        print("\nInteractive Debug: Click on any point in the frequency plot to see detailed analysis!")
+    # Show plot
+    plt.show(block=False)
     
-    plt.show()
+    # Return figure reference
+    return fig
 
 def plot_bode_frfs(frf_results, show_plot=True):
     """
@@ -1028,7 +1142,7 @@ def plot_bode_frfs(frf_results, show_plot=True):
     ax.legend()
     
     plt.tight_layout()
-    plt.show()
+    plt.show(block=False)
 
 # =============================================================================
 # FILE OUTPUT
@@ -1103,6 +1217,73 @@ def save_output(output2, original_filepath, default_folder='data'):
     return filepath
 
 # =============================================================================
+# USER INPUT FUNCTIONS
+# =============================================================================
+
+def prompt_time_range(time_array):
+    """
+    Prompt user for start and end time to filter the data.
+    
+    Parameters:
+    -----------
+    time_array : array_like
+        Time array in seconds
+        
+    Returns:
+    --------
+    tuple : (start_time, end_time)
+        Start and end time in seconds
+    """
+    min_time = np.min(time_array)
+    max_time = np.max(time_array)
+    
+    print(f"\n" + "="*60)
+    print("Time Range Selection")
+    print("="*60)
+    print(f"Available time range: {min_time:.3f} s to {max_time:.3f} s")
+    print(f"Total duration: {max_time - min_time:.3f} s")
+    
+    while True:
+        try:
+            start_input = input(f"\nEnter start time (s) [{min_time:.3f}]: ").strip()
+            if not start_input:
+                start_time = min_time
+            else:
+                start_time = float(start_input)
+            
+            end_input = input(f"Enter end time (s) [{max_time:.3f}]: ").strip()
+            if not end_input:
+                end_time = max_time
+            else:
+                end_time = float(end_input)
+            
+            # Validate input
+            if start_time < min_time:
+                print(f"Error: Start time ({start_time:.3f} s) is less than minimum time ({min_time:.3f} s)")
+                continue
+            
+            if end_time > max_time:
+                print(f"Error: End time ({end_time:.3f} s) is greater than maximum time ({max_time:.3f} s)")
+                continue
+            
+            if start_time >= end_time:
+                print(f"Error: Start time ({start_time:.3f} s) must be less than end time ({end_time:.3f} s)")
+                continue
+            
+            print(f"\nSelected time range: {start_time:.3f} s to {end_time:.3f} s")
+            print(f"Duration: {end_time - start_time:.3f} s")
+            
+            return start_time, end_time
+            
+        except ValueError:
+            print("Error: Please enter valid numeric values.")
+        except KeyboardInterrupt:
+            print("\n\nCancelled by user. Using full time range.")
+            return min_time, max_time
+        except Exception as e:
+            print(f"Error: {e}. Please try again.")
+
+# =============================================================================
 # MAIN PROCESSING
 # =============================================================================
 
@@ -1122,18 +1303,26 @@ def process_eccentric_mass_file(filepath, show_plot=True):
     dict : Contains processing results and metadata
     """
     try:
+        print("\n" + "="*60)
+        print("Processing Eccentric Mass FRF Estimation")
+        print("="*60)
+        
         # Load system parameters
+        print("\n[1/7] Loading system parameters...")
         params = get_system_parameters()
         
         # Parse filename for metadata (optional)
+        print("[2/7] Parsing filename metadata...")
         metadata = parse_filename(filepath)
         
         # Load CSV data
-        time, A0, A1, A2, A3, A4, A5 = load_csv_file(filepath)
+        print("[3/7] Loading CSV data...")
+        time, A0, A1, A2, A3, A4, A5, fs = load_csv_file(filepath)
+        print(f"  Loaded {len(time)} samples")
         
-        # Calculate sampling frequency
-        dt = estimate_sample_time(time)
-        fs = 1 / dt
+        # Calculate sample time from sample rate
+        dt = 1 / fs
+        print(f"  Sampling frequency: {fs:.2f} Hz (from CSV header)")
         
         # Store original signals for comparison plots
         original_signals = {
@@ -1142,13 +1331,21 @@ def process_eccentric_mass_file(filepath, show_plot=True):
         }
         
         # Remove bias from all analog input signals
+        print("[4/7] Removing bias from analog input signals...")
         window_size = params['bias_window_size']
+        print("  Processing A0...", end='', flush=True)
         A0 = remove_bias(A0, window_size)
+        print(" A1...", end='', flush=True)
         A1 = remove_bias(A1, window_size)
+        print(" A2...", end='', flush=True)
         A2 = remove_bias(A2, window_size)
+        print(" A3...", end='', flush=True)
         A3 = remove_bias(A3, window_size)
+        print(" A4...", end='', flush=True)
         A4 = remove_bias(A4, window_size)
+        print(" A5...", end='', flush=True)
         A5 = remove_bias(A5, window_size)
+        print(" Done")
         
         # Store corrected signals for comparison plots
         corrected_signals = {
@@ -1157,13 +1354,22 @@ def process_eccentric_mass_file(filepath, show_plot=True):
         }
         
         # Apply high-pass filter to all analog input signals
+        print("[5/7] Applying high-pass filter to analog input signals...")
         cutoff_hz = params['highpass_cutoff_hz']
+        print(f"  Cutoff frequency: {cutoff_hz} Hz")
+        print("  Processing A0...", end='', flush=True)
         A0 = apply_highpass_filter(A0, cutoff_hz, fs)
+        print(" A1...", end='', flush=True)
         A1 = apply_highpass_filter(A1, cutoff_hz, fs)
+        print(" A2...", end='', flush=True)
         A2 = apply_highpass_filter(A2, cutoff_hz, fs)
+        print(" A3...", end='', flush=True)
         A3 = apply_highpass_filter(A3, cutoff_hz, fs)
+        print(" A4...", end='', flush=True)
         A4 = apply_highpass_filter(A4, cutoff_hz, fs)
+        print(" A5...", end='', flush=True)
         A5 = apply_highpass_filter(A5, cutoff_hz, fs)
+        print(" Done")
         
         # Store filtered signals for comparison plots
         filtered_signals = {
@@ -1171,11 +1377,14 @@ def process_eccentric_mass_file(filepath, show_plot=True):
             'A3': A3, 'A4': A4, 'A5': A5
         }
         
-        # Show signal comparison plots
-        plot_signal_comparison(time, original_signals, corrected_signals, filtered_signals, show_plot)
-        
         # Calculate derived signals
+        print("[6/7] Calculating derived signals (x, y, theta_x, theta_y)...")
         signals = calculate_derived_signals(A0, A1, A2, A3, A4, A5, params)
+        print("  Done")
+        
+        # Show signal comparison plots
+        print("[7/7] Generating plots...")
+        plot_signal_comparison(time, original_signals, corrected_signals, filtered_signals, show_plot)
         
         # Plot accelerations
         plot_accelerations(time, signals['x'], signals['y'], 
@@ -1191,7 +1400,41 @@ def process_eccentric_mass_file(filepath, show_plot=True):
         
         # Plot frequency measurement
         frequency_array = output1[:, 1]  # Extract frequency column
-        plot_frequency_measurement(time, frequency_array, window_duration, debug_data, show_plot)
+        amplitude_array = output1[:, 2]  # Extract amplitude_X column
+        # Calculate input force for plotting (using full output1 data)
+        input_force_array = calculate_input_force(frequency_array, params['e_mass'])
+        freq_fig = plot_frequency_measurement(time, frequency_array, amplitude_array, input_force_array, window_duration, debug_data, show_plot)
+        
+        # Wait for user to view the plot before prompting for time range
+        if show_plot:
+            # Give matplotlib time to render and display all figures
+            time_module.sleep(1.0)
+            
+            print("\n" + "="*60)
+            print("All plots are displayed (Signal Comparison, Accelerations, Frequency-Amplitude-Input Force).")
+            print("When ready, you will be prompted to select a time range.")
+            print("="*60)
+            
+            print("\nPress Enter when you're ready to select the time range...")
+            input()
+            
+            # Prompt user for time range after plot is shown
+            start_time, end_time = prompt_time_range(time)
+            
+            # Filter output2 based on user-provided time range
+            time_mask = (output2[:, 0] >= start_time) & (output2[:, 0] <= end_time)
+            original_size = len(output2)
+            output2 = output2[time_mask]
+            filtered_size = len(output2)
+            
+            print(f"\nFiltering output2 to time range [{start_time:.3f} s, {end_time:.3f} s]:")
+            print(f"  Samples before filtering: {original_size}")
+            print(f"  Samples after filtering: {filtered_size}")
+            print(f"  Samples removed: {original_size - filtered_size}")
+        else:
+            # If not showing plots, use full time range
+            start_time = np.min(time)
+            end_time = np.max(time)
         
         # Calculate input force U and add to output2
         frequency_output2 = output2[:, 1]  # Frequency from output2
@@ -1272,6 +1515,57 @@ def main():
                   f"Y={result['metadata']['y_position']}, "
                   f"Z={result['metadata']['z_position']}")
             print(f"  Direction: {result['metadata']['direction']}")
+        
+        # Wait for user to close figures or exit
+        if show_plot:
+            print("\n" + "="*60)
+            print("All figures are displayed.")
+            print("You can:")
+            print("  - Close all figures to exit automatically")
+            print("  - Type 'y', 'yes', 'exit', 'q', 'quit', 'c', or 'C' when prompted to exit")
+            print("  - Press Ctrl+C anytime for immediate exit")
+            print("="*60)
+            
+            # Main wait loop with periodic prompt
+            prompt_interval = 5.0  # Prompt every 5 seconds
+            last_prompt_time = time_module.time()
+            check_interval = 0.5  # Check figures every 0.5 seconds
+            
+            try:
+                while True:
+                    # Check if all figures are closed
+                    open_figures = plt.get_fignums()
+                    if len(open_figures) == 0:
+                        print("\nAll figures closed. Exiting.")
+                        break
+                    
+                    # Periodically prompt user if they want to exit
+                    current_time = time_module.time()
+                    if current_time - last_prompt_time >= prompt_interval:
+                        try:
+                            response = input("\nExit program? (y/n) [Press Ctrl+C for immediate exit]: ").strip().lower()
+                            
+                            # Check for exit commands
+                            exit_commands = ['y', 'yes', 'exit', 'q', 'quit', 'c']
+                            if response in exit_commands:
+                                print("\nUser requested exit. Exiting program.")
+                                break
+                            # If user says 'n' or anything else, continue waiting
+                            last_prompt_time = current_time
+                        except (EOFError, KeyboardInterrupt):
+                            # Handle Ctrl+C or EOF
+                            print("\n\nExiting program (Ctrl+C pressed).")
+                            break
+                        except:
+                            # Other errors, just continue
+                            last_prompt_time = current_time
+                    
+                    # Small sleep to avoid busy waiting
+                    time_module.sleep(check_interval)
+                    
+            except KeyboardInterrupt:
+                # Handle Ctrl+C at any time
+                print("\n\nExiting program (Ctrl+C pressed).")
         
     except Exception as e:
         messagebox.showerror("Error", f"An error occurred: {str(e)}")

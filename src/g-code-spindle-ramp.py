@@ -17,7 +17,7 @@ from datetime import datetime
 # =============================================================================
 
 # Ramp time in seconds (total time for the entire ramp)
-RAMP_TIME = 30.0
+RAMP_TIME = 10.0
 
 # Frequency resolution in Hz (will be converted to RPM: Hz * 60 = RPM per step)
 FREQUENCY_RESOLUTION = 0.2
@@ -172,6 +172,10 @@ def generate_gcode(ramp_time, frequency_resolution, start_speed, end_speed, delt
     
     gcode_lines.append("")
     
+    # Hold at maximum speed for at least 1 second
+    gcode_lines.append("G4 P1.0")
+    gcode_lines.append("")
+    
     # Stop spindle
     gcode_lines.append("M5")
     
@@ -182,17 +186,25 @@ def generate_gcode(ramp_time, frequency_resolution, start_speed, end_speed, delt
 # FILE OUTPUT
 # =============================================================================
 
-def generate_filename():
+def generate_filename(start_speed, end_speed, duration):
     """
-    Generate timestamped filename for output G-code file.
+    Generate structured filename for output G-code file.
     
+    Parameters:
+    -----------
+    start_speed : float
+        Start spindle speed in RPM
+    end_speed : float
+        End spindle speed in RPM
+    duration : float
+        Ramp duration in seconds
+        
     Returns:
     --------
     str
-        Filename with format: spindle_ramp_YYYY-MM-DD_HH-MM-SS.nc
+        Filename with format: Spindle_ramp_S(start speed)_S(end_speed)_T(duration in seconds).nc
     """
-    timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    return f"spindle_ramp_{timestamp}.nc"
+    return f"Spindle_ramp_S{int(start_speed)}_S{int(end_speed)}_T{int(duration)}.nc"
 
 
 def write_gcode_file(gcode_content, filename):
@@ -247,7 +259,7 @@ def main():
     
     # Write to file
     print("\nWriting to file...")
-    filename = generate_filename()
+    filename = generate_filename(START_SPINDLE_SPEED, END_SPINDLE_SPEED, RAMP_TIME)
     write_gcode_file(gcode_content, filename)
     filepath = os.path.abspath(filename)
     print(f"  File saved: {filepath}")
