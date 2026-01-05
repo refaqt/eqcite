@@ -54,7 +54,7 @@ def get_system_parameters():
     bias_window_size = 1000  # Number of samples for bias estimation window
     
     # High-pass filter parameters
-    highpass_cutoff_hz = 0.5  # High-pass filter cutoff frequency (Hz)
+    highpass_cutoff_hz = 0.0001  # High-pass filter cutoff frequency (Hz)
     
     # Window parameters for raised cosine (Tukey) windowing
     use_raised_cosine_window = False  # Toggle to enable/disable raised cosine window
@@ -382,7 +382,7 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measuremen
     elif measurement_case == 'case2_x':
         x = (-(A0 - A1 + A2 - A3) / np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2) - A4) * r_a
         y = ((A0 + A1 + A2 + A3) / np.sin(alpha) / 4 + theta_x * (L1 + L2 + L3 / 2)) * r_a
-        x_tool = (A4 - A5) * r_a
+        x_tool = (A5 - A4) * r_a
         result['x'] = x
         result['y'] = y
         result['x_tool'] = x_tool
@@ -391,7 +391,7 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measuremen
     elif measurement_case == 'case2_y':
         x = (-(A0 - A1 + A2 - A3) / np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2)) * r_a
         y = ((A0 + A1 + A2 + A3) / np.sin(alpha) / 4 + theta_x * (L1 + L2 + L3 / 2) - A4) * r_a
-        y_tool = (A4 - A5) * r_a
+        y_tool = (A5 - A4) * r_a
         result['x'] = x
         result['y'] = y
         result['y_tool'] = y_tool
@@ -536,7 +536,8 @@ def perform_fft_analysis(time, u, x, y, tool_signal=None):
     # H(e^(jω)) = dt²/(1-e^(-jω))²
     z = np.exp(1j * omega * dt)
     H = dt**2 / (1 - z**(-1))**2
-    
+    # H = -1 / omega ** 2
+
     # Apply transfer function to convert acceleration to displacement
     X = np.zeros_like(X_accel, dtype=complex)
     Y = np.zeros_like(Y_accel, dtype=complex)
@@ -771,7 +772,7 @@ def plot_time_domain_signals(time, u, x, y, show_plot=True, window=None, tool_ac
     plt.tight_layout()
     plt.show()
 
-def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_plot=True, G_tool=None, tool_label=None):
+def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_plot=True, G_tool=None, G_tool_accel=None, tool_label=None):
     """
     Generate Bode magnitude and phase plots for Gx and Gy in a 2x2 or 2x3 layout.
     Optionally overlay acceleration-based transfer functions.
@@ -789,6 +790,8 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
         Whether to display the plot
     G_tool : array_like, optional
         Tool compliance transfer function (complex)
+    G_tool_accel : array_like, optional
+        Tool acceleration-based transfer function (complex)
     tool_label : str, optional
         Label for tool compliance (e.g., 'Gx_tool' or 'Gy_tool')
     """
@@ -831,6 +834,17 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
         G_tool_phase = np.unwrap(G_tool_phase)
         G_tool_phase = np.degrees(G_tool_phase)
     
+    # Calculate magnitudes and phases for tool acceleration if provided
+    if G_tool_accel is not None:
+        G_tool_accel_mag = np.abs(G_tool_accel)
+        G_tool_accel_phase = np.angle(G_tool_accel, deg=False)
+        
+        # Unwrap phase
+        G_tool_accel_phase = np.unwrap(G_tool_accel_phase)
+        
+        # Convert to degrees
+        G_tool_accel_phase = np.degrees(G_tool_accel_phase)
+    
     # Remove NaN values for plotting (displacement)
     valid_mask = np.isfinite(Gx_mag) & np.isfinite(Gy_mag) & np.isfinite(Gx_phase) & np.isfinite(Gy_phase)
     valid_freq = frequencies[valid_mask]
@@ -855,6 +869,13 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
         valid_G_tool_mag = G_tool_mag[valid_mask_tool]
         valid_G_tool_phase = G_tool_phase[valid_mask_tool]
     
+    # Process tool acceleration data if provided
+    if G_tool_accel is not None:
+        valid_mask_tool_accel = np.isfinite(G_tool_accel_mag) & np.isfinite(G_tool_accel_phase)
+        valid_freq_tool_accel = frequencies[valid_mask_tool_accel]
+        valid_G_tool_accel_mag = G_tool_accel_mag[valid_mask_tool_accel]
+        valid_G_tool_accel_phase = G_tool_accel_phase[valid_mask_tool_accel]
+    
     # Skip DC component for log plot
     if len(valid_freq) > 1 and valid_freq[0] == 0:
         valid_freq = valid_freq[1:]
@@ -878,6 +899,13 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
             valid_freq_tool = valid_freq_tool[1:]
             valid_G_tool_mag = valid_G_tool_mag[1:]
             valid_G_tool_phase = valid_G_tool_phase[1:]
+    
+    # Skip DC component for tool acceleration data
+    if G_tool_accel is not None:
+        if len(valid_freq_tool_accel) > 1 and valid_freq_tool_accel[0] == 0:
+            valid_freq_tool_accel = valid_freq_tool_accel[1:]
+            valid_G_tool_accel_mag = valid_G_tool_accel_mag[1:]
+            valid_G_tool_accel_phase = valid_G_tool_accel_phase[1:]
     
     # Determine layout: 2x3 if tool is provided, otherwise 2x2
     n_cols = 3 if G_tool is not None else 2
@@ -910,7 +938,9 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
     # Plot tool magnitude (top-right) if provided
     if G_tool is not None:
         ax[0, 2].loglog(valid_freq_tool, valid_G_tool_mag, 'm-', linewidth=2, label=f'{tool_label} (Displacement)')
-        ax[0, 2].set_ylabel('Compliance (m/N)')
+        if G_tool_accel is not None:
+            ax[0, 2].loglog(valid_freq_tool_accel, valid_G_tool_accel_mag, 'm--', linewidth=2, alpha=0.7, label=f'{tool_label} (Acceleration)')
+        ax[0, 2].set_ylabel('Compliance (m/N or m/s²/N)')
         title_label = tool_label.replace('_', ' ').title() if tool_label else 'Tool Compliance'
         ax[0, 2].set_title(f'Compliance {title_label} - Magnitude')
         ax[0, 2].grid(True, which="both", ls="-", alpha=0.3)
@@ -941,6 +971,8 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
     # Plot tool phase (bottom-right) if provided
     if G_tool is not None:
         ax[1, 2].semilogx(valid_freq_tool, valid_G_tool_phase, 'm-', linewidth=2, label=f'{tool_label} (Displacement)')
+        if G_tool_accel is not None:
+            ax[1, 2].semilogx(valid_freq_tool_accel, valid_G_tool_accel_phase, 'm--', linewidth=2, alpha=0.7, label=f'{tool_label} (Acceleration)')
         ax[1, 2].set_xlabel('Frequency (Hz)')
         ax[1, 2].set_ylabel('Phase (degrees)')
         title_label = tool_label.replace('_', ' ').title() if tool_label else 'Tool Compliance'
@@ -1300,8 +1332,9 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
                                                   fft_results['U'], Tool=Tool_freq)
         
         # Calculate acceleration transfer functions
+        Tool_accel_freq = fft_results.get('Tool_accel', None)
         tf_accel_results = calculate_transfer_functions(fft_results['X_accel'], fft_results['Y_accel'], 
-                                                       fft_results['U'])
+                                                       fft_results['U'], Tool=Tool_accel_freq)
         
         # Determine tool label for Bode plot
         tool_bode_label = None
@@ -1313,7 +1346,9 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
         # Generate Bode plots with both displacement and acceleration
         plot_bode_diagram(fft_results['frequencies'], tf_results['Gx'], tf_results['Gy'], 
                          tf_accel_results['Gx'], tf_accel_results['Gy'], show_plot,
-                         G_tool=tf_results.get('G_tool', None), tool_label=tool_bode_label)
+                         G_tool=tf_results.get('G_tool', None), 
+                         G_tool_accel=tf_accel_results.get('G_tool', None),
+                         tool_label=tool_bode_label)
         
         # Plot reconstructed time-domain signals
         Tool_freq_full = fft_results.get('Tool_full', None)
