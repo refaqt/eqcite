@@ -83,9 +83,12 @@ def get_system_parameters():
 # DATA LOADING FUNCTIONS
 # =============================================================================
 
-def load_csv_file(filepath):
+def parse_sample_rate_from_header(filepath):
     """
-    Load and parse CSV file, return time array and analog input arrays (A0-A7).
+    Parse sample rate from CSV file header.
+    
+    The header contains a line like "Samples per sec. = 56000/1" where the number
+    is the total samples per second for all channels combined.
     
     Parameters:
     -----------
@@ -94,11 +97,57 @@ def load_csv_file(filepath):
         
     Returns:
     --------
-    tuple : (time_array, A0, A1, A2, A3, A4, A5, A6, A7)
-        Time array and 8 analog input arrays.
+    float : Total samples per second for all channels combined
+        
+    Raises:
+    -------
+    ValueError : If sample rate cannot be found in header
+    FileNotFoundError : If file doesn't exist
+    """
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"File not found: {filepath}")
+    
+    # Read first line to get header
+    try:
+        with open(filepath, 'r') as f:
+            first_line = f.readline()
+    except Exception as e:
+        raise ValueError(f"Error reading CSV file header: {e}")
+    
+    # Search for sample rate in first line
+    # Pattern: "Samples per sec. = 56000/1" or similar variations
+    pattern = r'Samples\s+per\s+sec\.\s*=\s*(\d+)/\d+'
+    
+    match = re.search(pattern, first_line, re.IGNORECASE)
+    if match:
+        total_sample_rate = float(match.group(1))
+        return total_sample_rate
+    
+    # If not found, raise error
+    raise ValueError(
+        f"Could not find sample rate in CSV header. "
+        f"Expected format: 'Samples per sec. = XXXXX/1'. "
+        f"First line: {first_line.strip()}"
+    )
+
+def load_csv_file(filepath):
+    """
+    Load and parse CSV file, return time array, analog input arrays (A0-A7), fs, and dt.
+    
+    Parameters:
+    -----------
+    filepath : str
+        Path to the CSV file
+        
+    Returns:
+    --------
+    tuple : (time_array, A0, A1, A2, A3, A4, A5, A6, A7, fs, dt)
+        Time array, 8 analog input arrays, sampling frequency (Hz), and sample time (s).
         If the CSV contains only 7 analog channels (Time + A0–A6), A7 is returned
         as a zero array with the same length as the time array so that downstream
         code can always assume 8 channels are present.
+        fs is the per-channel sampling frequency calculated from the header.
+        dt is the sample time (1/fs).
         
     Raises:
     -------
@@ -109,6 +158,9 @@ def load_csv_file(filepath):
         # Check if file exists
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"File not found: {filepath}")
+        
+        # Parse sample rate from header (total samples per second for all channels)
+        total_samples_per_sec = parse_sample_rate_from_header(filepath)
         
         # Read CSV file, skipping first 5 header lines
         df = pd.read_csv(
@@ -129,6 +181,12 @@ def load_csv_file(filepath):
                 f"Expected 8 or 9 columns (Time + A0–A6 [+ optional A7]), "
                 f"found {n_cols}"
             )
+        
+        # Calculate per-channel sampling frequency
+        # Number of data channels = total columns - 1 (time column)
+        num_data_channels = n_cols - 1
+        fs = total_samples_per_sec / num_data_channels
+        dt = 1 / fs
         
         # Define column names for clarity (we may not have all of them)
         column_names = ['Time', 'A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7']
@@ -184,7 +242,7 @@ def load_csv_file(filepath):
                     f"Column {i} has {nan_count} non-finite values (NaN or Inf)"
                 )
         
-        return time, A0, A1, A2, A3, A4, A5, A6, A7
+        return time, A0, A1, A2, A3, A4, A5, A6, A7, fs, dt
         
     except pd.errors.EmptyDataError:
         raise ValueError("CSV file is empty or malformed")
@@ -229,25 +287,6 @@ def parse_filename(filepath):
 # =============================================================================
 # SIGNAL PROCESSING FUNCTIONS
 # =============================================================================
-
-def estimate_sample_time(time_array):
-    """
-    Calculate sample time from first two time points.
-    
-    Parameters:
-    -----------
-    time_array : array_like
-        Time array in seconds
-        
-    Returns:
-    --------
-    float : Sample time in seconds
-    """
-    if len(time_array) < 2:
-        raise ValueError("Time array must have at least 2 points")
-    
-    dt = time_array[1] - time_array[0]
-    return dt
 
 def remove_bias(signal, window_size=1000):
     """
@@ -402,7 +441,7 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measuremen
     return result
 
 
-def create_raised_cosine_window(time, force_signal, pre_seconds, post_seconds, beta):
+def create_raised_cosine_window(time, force_signal, pre_seconds, post_seconds, beta, dt):
     """
     Build a raised cosine (Tukey) window around the dominant force peak.
 
@@ -418,6 +457,8 @@ def create_raised_cosine_window(time, force_signal, pre_seconds, post_seconds, b
         Duration after the peak time where the window remains non-zero.
     beta : float
         Tukey window roll-off factor (0 <= beta <= 1).
+    dt : float
+        Sample time in seconds
 
     Returns
     -------
@@ -438,7 +479,6 @@ def create_raised_cosine_window(time, force_signal, pre_seconds, post_seconds, b
     if len(time) < 2:
         raise ValueError("Time array must contain at least two samples to create a window")
 
-    dt = time[1] - time[0]
     if not np.isfinite(dt) or dt <= 0:
         raise ValueError("Non-positive or non-finite sample interval detected")
 
@@ -495,7 +535,7 @@ def create_raised_cosine_window(time, force_signal, pre_seconds, post_seconds, b
 # FREQUENCY DOMAIN ANALYSIS
 # =============================================================================
 
-def perform_fft_analysis(time, u, x, y, tool_signal=None):
+def perform_fft_analysis(time, u, x, y, dt, tool_signal=None):
     """
     Perform FFT and return frequencies, X, Y, U in frequency domain.
     Note: x and y are accelerations and will be double-integrated to displacements.
@@ -510,6 +550,8 @@ def perform_fft_analysis(time, u, x, y, tool_signal=None):
         Force signal (time domain)
     x, y : array_like
         Acceleration signals in time domain (m/s²)
+    dt : float
+        Sample time in seconds
     tool_signal : array_like, optional
         Tool acceleration signal in time domain (m/s²) - x_tool or y_tool
         
@@ -520,7 +562,6 @@ def perform_fft_analysis(time, u, x, y, tool_signal=None):
         Optionally includes Tool and Tool_accel if tool_signal is provided
     """
     N = len(time)
-    dt = time[1] - time[0]
     fs = 1 / dt  # Sampling frequency
     
     # Perform FFT
@@ -1219,10 +1260,7 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
         metadata = parse_filename(filepath)
         
         # Load CSV data
-        time, A0, A1, A2, A3, A4, A5, A6, A7 = load_csv_file(filepath)
-        
-        # Calculate sampling frequency
-        fs = 1 / estimate_sample_time(time)
+        time, A0, A1, A2, A3, A4, A5, A6, A7, fs, dt = load_csv_file(filepath)
         
         # Store original signals for comparison plots
         original_signals = {
@@ -1278,7 +1316,8 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
                 signals['u'],
                 params['window_pre_seconds'],
                 params['window_post_seconds'],
-                params['window_beta']
+                params['window_beta'],
+                dt
             )
         else:
             # No windowing: use all-ones window (no effect on signals)
@@ -1320,7 +1359,7 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
         
         # Perform FFT analysis using windowed signals
         fft_results = perform_fft_analysis(time, windowed_signals['u'], windowed_signals['x'], 
-                                           windowed_signals['y'], tool_signal=tool_signal)
+                                           windowed_signals['y'], dt, tool_signal=tool_signal)
 
         # Generate PSD plot for input force
         plot_force_psd(fft_results['frequencies'], fft_results['U'],
