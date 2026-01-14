@@ -24,21 +24,21 @@ class SimulationParameters:
     
     def __init__(self):
         # Timing parameters
-        self.fs = 5000           # Sampling rate (Hz)
+        self.fs = 8000           # Sampling rate (Hz)
         self.dt = 1 / self.fs    # Sampling time (s)
         self.T = 1               # Measurement time (s)
         
         # Mass-Spring-Damper parameters
         self.mass = 8.0                                                 # Mass (kg)
         self.stiffness = 1e6                                            # Spring stiffness (N/m)
-        self.damping = 0.1 * 2 * np.sqrt(self.stiffness * self.mass)    # Damping coefficient (N·s/m)
+        self.damping = 0.02 * 2 * np.sqrt(self.stiffness * self.mass)    # Damping coefficient (N·s/m)
         
         # Hammer parameters
-        self.hammer_force = 100  # Hammer force magnitude (N)
+        self.hammer_force = 50  # Hammer force magnitude (N)
         self.hammer_bandwidth = 1000  # Hammer bandwidth (Hz)
         
         # Geometric parameter
-        self.alpha = 20 * np.pi / 180  # Angle (radians)
+        self.alpha = 20.123 * np.pi / 180  # Angle (radians)
         
         # Sensor calibration (from frf-estimation.py)
         self.r_u = 1 / (2.5e-3 * 10)  # Force sensitivity (N/V)
@@ -225,14 +225,14 @@ def map_to_sensors(acceleration, force, params):
     x_volt = acceleration / r_a
     
     # Map to sensor channels
-    A0 = np.zeros_like(acceleration)
-    A1 = -x_volt / np.cos(alpha)
-    A2 = x_volt / np.cos(alpha)
-    A3 = -x_volt / np.cos(alpha)
-    A4 = x_volt / np.cos(alpha)
+    A0 = -x_volt * np.cos(alpha)
+    A1 = x_volt * np.cos(alpha)
+    A2 = -x_volt * np.cos(alpha)
+    A3 = x_volt * np.cos(alpha)
+    A4 = np.zeros_like(acceleration)
     A5 = np.zeros_like(acceleration)
-    A6 = np.zeros_like(acceleration)
-    A7 = force / r_u  # Convert force to voltage
+    A6 = force / r_u  # Convert force to voltage
+    A7 = np.zeros_like(acceleration)
     
     return {
         'A0': A0,
@@ -284,7 +284,7 @@ def save_to_csv(time, sensors, params, position='X0_Y0_Z0', direction='x'):
     # Write CSV file with exact format
     with open(filepath, 'w') as f:
         # Line 1: Sample rate
-        f.write(f'"Samples per sec. = {sample_rate}/1"\n')
+        f.write(f'"Samples per sec. = {8*sample_rate}/1"\n')
         
         # Lines 2-4: Empty strings
         f.write('""\n')
