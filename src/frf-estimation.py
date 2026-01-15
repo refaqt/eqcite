@@ -64,7 +64,7 @@ def get_system_parameters():
     highpass_cutoff_hz = 0.0001  # High-pass filter cutoff frequency (Hz)
     
     # Wiener filter parameters
-    wiener_filter = True  # Toggle to enable/disable Wiener filter for channels A0-A5
+    wiener_filter = False  # Toggle to enable/disable Wiener filter for channels A0-A5
     
     # Low-pass filter parameters (for analysis visualization only)
     lowpass_bandwidth_hz = 100.0  # Low-pass filter bandwidth (Hz) for analysis plots
@@ -74,11 +74,16 @@ def get_system_parameters():
     window_pre_seconds = 0.05   # Seconds before peak force to start window
     window_post_seconds = 0.1   # Seconds after peak force to end window
     window_beta = 0.25          # Tukey window roll-off (0 to 1)
+    window_rolloff_seconds = 0.005  # Rolloff duration and peak offset timing for signal-based windows (seconds)
+    window_trigger_percent = 0.1  # Threshold percentage for trigger point (10% of max)
+    window_low_percent = 0.005  # Threshold percentage for low point (2% of max)
+    window_sliding_size = 100  # Size of sliding window in samples for low_percent detection
+    window_std_multiplier = 3.0  # Multiplier for standard deviation in low_percent condition
     
     # Welch method parameters for CSD-based transfer function estimation
     use_welch_csd = True       # Toggle to enable/disable Welch CSD method (default: True)
-    welch_nperseg = 1000       # Length of each segment for Welch method (None = scipy default: 256 or signal length)
-    welch_noverlap = None      # Number of points to overlap between segments (None = scipy default: nperseg // 2)
+    welch_nperseg = 2500       # Length of each segment for Welch method (None = scipy default: 256 or signal length)
+    welch_noverlap = 2000      # Number of points to overlap between segments (None = scipy default: nperseg // 2)
     welch_window = 'hann'      # Window type for Welch method
     welch_scaling = 'density'   # PSD scaling: 'density' or 'spectrum'
 
@@ -99,6 +104,11 @@ def get_system_parameters():
         'window_pre_seconds': window_pre_seconds,
         'window_post_seconds': window_post_seconds,
         'window_beta': window_beta,
+        'window_rolloff_seconds': window_rolloff_seconds,
+        'window_trigger_percent': window_trigger_percent,
+        'window_low_percent': window_low_percent,
+        'window_sliding_size': window_sliding_size,
+        'window_std_multiplier': window_std_multiplier,
         'use_welch_csd': use_welch_csd,
         'welch_nperseg': welch_nperseg,
         'welch_noverlap': welch_noverlap,
@@ -653,6 +663,240 @@ def create_raised_cosine_window(time, force_signal, pre_seconds, post_seconds, b
         'end_index': end_idx
     }
 
+    return window, metadata
+
+def create_signal_based_window(sig, time, params, dt):
+    """
+    Build a raised cosine (Tukey) window based on signal-specific thresholds.
+    
+    The window is determined by:
+    - Finding the first sample where |signal| >= trigger_percent * max(|signal|)
+    - Setting peak time to rolloff_seconds before this sample
+    - Finding the last window where 3*std > low_percent * max(|signal|) using sliding window
+    - Setting end rolloff start to rolloff_seconds after this sample
+    - Rolloff duration is rolloff_seconds on both sides
+    
+    Parameters
+    ----------
+    sig : array_like
+        Input signal array used to determine window timing
+    time : array_like
+        Time vector (seconds), assumed monotonically increasing
+    params : dict
+        System parameters dictionary containing window configuration
+    dt : float
+        Sample time in seconds
+    
+    Returns
+    -------
+    np.ndarray
+        Window array matching the length of `time` with values in [0, 1]
+    dict
+        Metadata including peak time, start/end times, and threshold indices
+    """
+    sig = np.asarray(sig)
+    time = np.asarray(time)
+    
+    if time.shape != sig.shape:
+        raise ValueError("Time and signal must have the same shape for windowing")
+    
+    if time.ndim != 1:
+        raise ValueError("Time array must be one-dimensional")
+    
+    if len(time) < 2:
+        raise ValueError("Time array must contain at least two samples to create a window")
+    
+    if not np.isfinite(dt) or dt <= 0:
+        raise ValueError("Non-positive or non-finite sample interval detected")
+    
+    # Extract parameters
+    rolloff_seconds = params.get('window_rolloff_seconds', 0.005)
+    trigger_percent = params.get('window_trigger_percent', 0.1)
+    low_percent = params.get('window_low_percent', 0.02)
+    window_sliding_size = params.get('window_sliding_size', 100)
+    std_multiplier = params.get('window_std_multiplier', 3.0)
+    
+    # Calculate absolute signal and maximum
+    abs_signal = np.abs(sig)
+    max_abs_signal = np.max(abs_signal)
+    
+    # Handle edge case: signal is all zeros or has no valid data
+    if max_abs_signal == 0 or not np.isfinite(max_abs_signal):
+        # Return all-ones window as fallback
+        window = np.ones_like(time, dtype=float)
+        return window, {
+            'peak_time': time[len(time) // 2],
+            'start_time': time[0],
+            'end_time': time[-1],
+            'peak_index': len(time) // 2,
+            'start_index': 0,
+            'end_index': len(time),
+            'first_trigger_percent_idx': len(time) // 2,
+            'last_low_percent_idx': len(time) // 2
+        }
+    
+    # Find first sample where |signal| >= trigger_percent * max(|signal|)
+    threshold_trigger_percent = trigger_percent * max_abs_signal
+    first_trigger_percent_mask = abs_signal >= threshold_trigger_percent
+    first_trigger_percent_indices = np.where(first_trigger_percent_mask)[0]
+    
+    if len(first_trigger_percent_indices) == 0:
+        # No sample reaches trigger threshold, use midpoint as fallback
+        first_trigger_percent_idx = len(time) // 2
+    else:
+        first_trigger_percent_idx = first_trigger_percent_indices[0]
+    
+    # Find last window where 3*std > low_percent * max(|signal|) using sliding window
+    # Use iterative threshold increase if no window is found
+    current_threshold_percent = low_percent
+    max_iterations = 40
+    found_window = False
+    
+    # Handle case where signal is shorter than window size
+    if len(abs_signal) < window_sliding_size:
+        # Use smaller window or fallback
+        actual_window_size = max(1, len(abs_signal) // 2)
+        if actual_window_size < 2:
+            # Signal too short, use last sample as fallback
+            last_low_percent_idx = len(time) - 1
+        else:
+            # Try with iterative threshold increase
+            for iteration in range(max_iterations):
+                threshold_low_percent = current_threshold_percent * max_abs_signal
+                # Use the smaller window
+                window_data = abs_signal[-actual_window_size:]
+                std = np.std(window_data)
+                if std_multiplier * std > threshold_low_percent:
+                    last_low_percent_idx = len(time) - actual_window_size
+                    found_window = True
+                    break
+                else:
+                    # Increase threshold by 0.01 for next iteration
+                    current_threshold_percent += 0.005
+            
+            if not found_window:
+                # Fallback: use last sample
+                last_low_percent_idx = len(time) - 1
+    else:
+        # Slide window of size window_sliding_size over the signal
+        for iteration in range(max_iterations):
+            threshold_low_percent = current_threshold_percent * max_abs_signal
+            last_valid_window_start = None
+
+            for i in range(len(abs_signal) - window_sliding_size + 1):
+                window_data = abs_signal[i:i + window_sliding_size]
+                sigma = np.std(window_data)
+                if std_multiplier * sigma > threshold_low_percent:
+                    last_valid_window_start = i
+            
+            if (last_valid_window_start is not None) & (last_valid_window_start != len(abs_signal) - window_sliding_size) \
+                        & (last_valid_window_start < int((window_sliding_size + len(abs_signal))/5)):
+                last_low_percent_idx = last_valid_window_start
+                found_window = True
+                break
+            else:
+                # Increase threshold by 0.01 for next iteration
+                current_threshold_percent += 0.01
+        
+        if not found_window:
+            # Fallback: use last sample
+            last_low_percent_idx = len(time) - 1
+    
+    # Calculate timing
+    first_trigger_percent_time = time[first_trigger_percent_idx]
+    last_low_percent_time = time[last_low_percent_idx]
+    
+    # Peak time is rolloff_seconds before the first 10% point
+    peak_time = first_trigger_percent_time - rolloff_seconds
+    
+    # Window start is rolloff_seconds before peak (where rolloff begins)
+    start_time = peak_time - rolloff_seconds
+    
+    # End rolloff starts rolloff_seconds after the last 1% point
+    end_rolloff_start_time = last_low_percent_time + rolloff_seconds
+    
+    # Window end is rolloff_seconds after end rolloff start (where rolloff ends)
+    end_time = end_rolloff_start_time + rolloff_seconds
+    
+    # Clamp times to valid range
+    start_time = max(start_time, time[0])
+    end_time = min(end_time, time[-1])
+    
+    # Ensure end_time > start_time
+    if end_time <= start_time:
+        # Fallback: use a small window around the peak
+        peak_idx = int(np.argmax(abs_signal))
+        peak_time = time[peak_idx]
+        start_time = max(peak_time - rolloff_seconds, time[0])
+        end_time = min(peak_time + rolloff_seconds, time[-1])
+        if end_time <= start_time:
+            end_time = min(start_time + 2 * rolloff_seconds, time[-1])
+    
+    # Find indices
+    start_idx = int(np.searchsorted(time, start_time, side='left'))
+    end_idx = int(np.searchsorted(time, end_time, side='right'))
+    
+    # Ensure valid indices
+    start_idx = max(0, min(start_idx, len(time) - 1))
+    end_idx = max(start_idx + 1, min(end_idx, len(time)))
+    
+    # Find peak index
+    peak_idx = int(np.searchsorted(time, peak_time, side='left'))
+    peak_idx = max(0, min(peak_idx, len(time) - 1))
+    
+    # Create window array
+    window = np.zeros_like(time, dtype=float)
+    
+    # Check if window segment is long enough
+    segment_length = end_idx - start_idx
+    if segment_length < 2:
+        # Window too short, set peak to 1.0
+        window[peak_idx] = 1.0
+        return window, {
+            'peak_time': peak_time,
+            'start_time': time[peak_idx],
+            'end_time': time[peak_idx],
+            'peak_index': peak_idx,
+            'start_index': peak_idx,
+            'end_index': peak_idx + 1,
+            'first_trigger_percent_idx': first_trigger_percent_idx,
+            'last_low_percent_idx': last_low_percent_idx
+        }
+    
+    # Calculate rolloff duration in samples
+    rolloff_samples = max(1, int(np.round(rolloff_seconds / dt)))
+    
+    # Calculate total window length in samples
+    total_window_samples = end_idx - start_idx
+    
+    # Calculate alpha parameter for Tukey window
+    # alpha = 2 * rolloff_samples / total_window_samples
+    # This ensures rolloff regions are approximately rolloff_seconds long on both sides
+    if total_window_samples > 2 * rolloff_samples:
+        alpha = 2 * rolloff_samples / total_window_samples
+        alpha = min(max(alpha, 0.0), 1.0)  # Clamp to [0, 1]
+    else:
+        # Window too short for proper rolloff, use small alpha
+        alpha = 0.1
+    
+    # Create Tukey window segment with symmetric tapering (rolloff on both sides)
+    tukey_segment = signal.windows.tukey(total_window_samples, alpha=alpha, sym=True)
+    
+    # Place window segment in the full window array
+    window[start_idx:end_idx] = tukey_segment
+    
+    # Metadata
+    metadata = {
+        'peak_time': peak_time,
+        'start_time': time[start_idx],
+        'end_time': time[end_idx - 1],
+        'peak_index': peak_idx,
+        'start_index': start_idx,
+        'end_index': end_idx,
+        'first_trigger_percent_idx': first_trigger_percent_idx,
+        'last_low_percent_idx': last_low_percent_idx
+    }
+    
     return window, metadata
 
 # =============================================================================
@@ -1630,10 +1874,11 @@ def plot_wiener_filtered_signals(time, bias_corrected_signals, wiener_filtered_s
     plt.tight_layout()
     plt.show()
 
-def plot_time_domain_signals(time, u, x, y, show_plot=True, window=None, tool_accel=None, tool_label=None):
+def plot_time_domain_signals(time, u, x, y, show_plot=True, windows=None, tool_accel=None, tool_label=None):
     """
     Plot time-domain signals u, x, y in a single figure with synchronized x-axes.
     Optionally includes tool acceleration signal as 4th subplot.
+    Each signal can have its own window overlay.
     
     Parameters:
     -----------
@@ -1647,8 +1892,10 @@ def plot_time_domain_signals(time, u, x, y, show_plot=True, window=None, tool_ac
         Y-direction acceleration (m/s²)
     show_plot : bool
         Whether to display the plot
-    window : array_like, optional
-        Window function to overlay on plots
+    windows : dict, optional
+        Dictionary of window functions to overlay on plots.
+        Keys: 'u', 'x', 'y', 'tool' (optional)
+        Values: window arrays matching time length
     tool_accel : array_like, optional
         Tool acceleration signal (m/s²) - x_tool or y_tool
     tool_label : str, optional
@@ -1666,10 +1913,11 @@ def plot_time_domain_signals(time, u, x, y, show_plot=True, window=None, tool_ac
     axes[0].set_ylabel('Force (N)')
     axes[0].set_title('Force Input u(t)')
     axes[0].grid(True, alpha=0.3)
-    if window is not None:
+    if windows is not None and 'u' in windows:
+        window_u = windows['u']
         scale = np.max(np.abs(u))
         scale = scale if scale > 0 else 1.0
-        axes[0].plot(time, window * scale, 'k--', linewidth=1, label='Window')
+        axes[0].plot(time, window_u * scale, 'k--', linewidth=1, label='Window')
         axes[0].legend(fontsize=8)
     
     # Plot x acceleration
@@ -1677,10 +1925,11 @@ def plot_time_domain_signals(time, u, x, y, show_plot=True, window=None, tool_ac
     axes[1].set_ylabel('Acceleration (m/s²)')
     axes[1].set_title('X-Direction Acceleration x(t)')
     axes[1].grid(True, alpha=0.3)
-    if window is not None:
+    if windows is not None and 'x' in windows:
+        window_x = windows['x']
         scale = np.max(np.abs(x))
         scale = scale if scale > 0 else 1.0
-        axes[1].plot(time, window * scale, 'k--', linewidth=1, label='Window')
+        axes[1].plot(time, window_x * scale, 'k--', linewidth=1, label='Window')
         axes[1].legend(fontsize=8)
     
     # Plot y acceleration
@@ -1688,10 +1937,11 @@ def plot_time_domain_signals(time, u, x, y, show_plot=True, window=None, tool_ac
     axes[2].set_ylabel('Acceleration (m/s²)')
     axes[2].set_title('Y-Direction Acceleration y(t)')
     axes[2].grid(True, alpha=0.3)
-    if window is not None:
+    if windows is not None and 'y' in windows:
+        window_y = windows['y']
         scale = np.max(np.abs(y))
         scale = scale if scale > 0 else 1.0
-        axes[2].plot(time, window * scale, 'k--', linewidth=1, label='Window')
+        axes[2].plot(time, window_y * scale, 'k--', linewidth=1, label='Window')
         axes[2].legend(fontsize=8)
     
     # Plot tool acceleration if provided
@@ -1702,10 +1952,11 @@ def plot_time_domain_signals(time, u, x, y, show_plot=True, window=None, tool_ac
         title_label = tool_label.replace('_', ' ').title() if tool_label else 'Tool Acceleration'
         axes[3].set_title(f'Tool Acceleration {title_label}(t)')
         axes[3].grid(True, alpha=0.3)
-        if window is not None:
+        if windows is not None and 'tool' in windows:
+            window_tool = windows['tool']
             scale = np.max(np.abs(tool_accel))
             scale = scale if scale > 0 else 1.0
-            axes[3].plot(time, window * scale, 'k--', linewidth=1, label='Window')
+            axes[3].plot(time, window_tool * scale, 'k--', linewidth=1, label='Window')
             axes[3].legend(fontsize=8)
     else:
         axes[2].set_xlabel('Time (s)')
@@ -1920,6 +2171,144 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
         ax[1, 2].set_title(f'Compliance {title_label} - Phase')
         ax[1, 2].grid(True, which="both", ls="-", alpha=0.3)
         ax[1, 2].legend()
+    
+    plt.tight_layout()
+    plt.show()
+
+def plot_real_transfer_functions(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_plot=True, G_tool=None, G_tool_accel=None, tool_label=None):
+    """
+    Generate plots of the real part of transfer functions Gx, Gy, and Gtool on linear scale.
+    Creates a 2-column layout: accelerations in the left column, displacements in the right column.
+    Has 2 or 3 rows depending on whether G_tool is provided.
+    
+    Parameters:
+    -----------
+    frequencies : array_like
+        Frequency array in Hz
+    Gx, Gy : array_like
+        Displacement-based transfer functions (complex)
+    Gx_accel, Gy_accel : array_like, optional
+        Acceleration-based transfer functions (complex)
+    show_plot : bool
+        Whether to display the plot
+    G_tool : array_like, optional
+        Tool compliance transfer function (complex)
+    G_tool_accel : array_like, optional
+        Tool acceleration-based transfer function (complex)
+    tool_label : str, optional
+        Label for tool compliance (e.g., 'Gx_tool' or 'Gy_tool')
+    """
+    if not show_plot:
+        return
+    
+    # Extract real parts for displacement
+    Gx_real = np.real(Gx)
+    Gy_real = np.real(Gy)
+    
+    # Extract real parts for acceleration if provided
+    if Gx_accel is not None and Gy_accel is not None:
+        Gx_accel_real = np.real(Gx_accel)
+        Gy_accel_real = np.real(Gy_accel)
+    
+    # Extract real parts for tool if provided
+    if G_tool is not None:
+        G_tool_real = np.real(G_tool)
+    
+    # Extract real parts for tool acceleration if provided
+    if G_tool_accel is not None:
+        G_tool_accel_real = np.real(G_tool_accel)
+    
+    # Remove NaN values for plotting (displacement)
+    valid_mask = np.isfinite(Gx_real) & np.isfinite(Gy_real)
+    valid_freq = frequencies[valid_mask]
+    valid_Gx_real = Gx_real[valid_mask]
+    valid_Gy_real = Gy_real[valid_mask]
+    
+    # Process acceleration data if provided
+    if Gx_accel is not None and Gy_accel is not None:
+        valid_mask_accel = np.isfinite(Gx_accel_real) & np.isfinite(Gy_accel_real)
+        valid_freq_accel = frequencies[valid_mask_accel]
+        valid_Gx_accel_real = Gx_accel_real[valid_mask_accel]
+        valid_Gy_accel_real = Gy_accel_real[valid_mask_accel]
+    
+    # Process tool data if provided
+    if G_tool is not None:
+        valid_mask_tool = np.isfinite(G_tool_real)
+        valid_freq_tool = frequencies[valid_mask_tool]
+        valid_G_tool_real = G_tool_real[valid_mask_tool]
+    
+    # Process tool acceleration data if provided
+    if G_tool_accel is not None:
+        valid_mask_tool_accel = np.isfinite(G_tool_accel_real)
+        valid_freq_tool_accel = frequencies[valid_mask_tool_accel]
+        valid_G_tool_accel_real = G_tool_accel_real[valid_mask_tool_accel]
+    
+    # Determine number of rows: 3 if G_tool is provided, otherwise 2
+    n_rows = 3 if G_tool is not None else 2
+    fig, axes = plt.subplots(n_rows, 2, figsize=(14, 10 + 2.5 * (n_rows - 2)), sharex='col', sharey='none')
+    
+    # Handle case where n_rows == 1 (shouldn't happen, but just in case)
+    if n_rows == 1:
+        axes = axes.reshape(1, -1)
+    
+    # Plot Gx acceleration (first row, left column)
+    if Gx_accel is not None and Gy_accel is not None:
+        axes[0, 0].plot(valid_freq_accel, valid_Gx_accel_real, 'b-', linewidth=2, label='Gx (Acceleration)')
+    axes[0, 0].set_ylabel('real(Gx)')
+    axes[0, 0].set_title('Real Part of Gx Transfer Function - Acceleration')
+    axes[0, 0].grid(True, alpha=0.3)
+    if Gx_accel is not None and Gy_accel is not None:
+        axes[0, 0].legend()
+    
+    # Plot Gx displacement (first row, right column)
+    axes[0, 1].plot(valid_freq, valid_Gx_real, 'b-', linewidth=2, label='Gx (Displacement)')
+    axes[0, 1].set_ylabel('real(Gx)')
+    axes[0, 1].set_title('Real Part of Gx Transfer Function - Displacement')
+    axes[0, 1].grid(True, alpha=0.3)
+    axes[0, 1].legend()
+    
+    # Plot Gy acceleration (second row, left column)
+    if Gx_accel is not None and Gy_accel is not None:
+        axes[1, 0].plot(valid_freq_accel, valid_Gy_accel_real, 'r-', linewidth=2, label='Gy (Acceleration)')
+    axes[1, 0].set_ylabel('real(Gy)')
+    axes[1, 0].set_title('Real Part of Gy Transfer Function - Acceleration')
+    axes[1, 0].grid(True, alpha=0.3)
+    if Gx_accel is not None and Gy_accel is not None:
+        axes[1, 0].legend()
+    
+    # Plot Gy displacement (second row, right column)
+    axes[1, 1].plot(valid_freq, valid_Gy_real, 'r-', linewidth=2, label='Gy (Displacement)')
+    axes[1, 1].set_ylabel('real(Gy)')
+    axes[1, 1].set_title('Real Part of Gy Transfer Function - Displacement')
+    axes[1, 1].grid(True, alpha=0.3)
+    axes[1, 1].legend()
+    
+    # Plot Gtool acceleration and displacement (third row) if provided
+    if G_tool is not None:
+        tool_label_display = tool_label if tool_label else 'Gtool'
+        title_label = tool_label.replace('_', ' ').title() if tool_label else 'Gtool'
+        
+        # Plot Gtool acceleration (third row, left column)
+        if G_tool_accel is not None:
+            axes[2, 0].plot(valid_freq_tool_accel, valid_G_tool_accel_real, 'm-', linewidth=2, label=f'{tool_label_display} (Acceleration)')
+        axes[2, 0].set_ylabel(f'real({tool_label_display})')
+        axes[2, 0].set_xlabel('Frequency (Hz)')
+        axes[2, 0].set_title(f'Real Part of {title_label} Transfer Function - Acceleration')
+        axes[2, 0].grid(True, alpha=0.3)
+        if G_tool_accel is not None:
+            axes[2, 0].legend()
+        
+        # Plot Gtool displacement (third row, right column)
+        axes[2, 1].plot(valid_freq_tool, valid_G_tool_real, 'm-', linewidth=2, label=f'{tool_label_display} (Displacement)')
+        axes[2, 1].set_ylabel(f'real({tool_label_display})')
+        axes[2, 1].set_xlabel('Frequency (Hz)')
+        axes[2, 1].set_title(f'Real Part of {title_label} Transfer Function - Displacement')
+        axes[2, 1].grid(True, alpha=0.3)
+        axes[2, 1].legend()
+    else:
+        # Set xlabel on the last row (Gy) if G_tool is not present
+        axes[1, 0].set_xlabel('Frequency (Hz)')
+        axes[1, 1].set_xlabel('Frequency (Hz)')
     
     plt.tight_layout()
     plt.show()
@@ -2463,45 +2852,62 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
             # Calculate derived signals with measurement case
             signals = calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measurement_case)
             
-            # Build window around primary force event (raised cosine or no window)
-            if params['use_raised_cosine_window']:
-                window, window_metadata = create_raised_cosine_window(
-                    time,
-                    signals['u'],
-                    params['window_pre_seconds'],
-                    params['window_post_seconds'],
-                    params['window_beta'],
-                    dt
-                )
-            else:
-                # No windowing: use all-ones window (no effect on signals)
-                window = np.ones_like(time, dtype=float)
-                window_metadata = {
-                    'peak_time': time[len(time) // 2],
-                    'start_time': time[0],
-                    'end_time': time[-1],
-                    'peak_index': len(time) // 2,
-                    'start_index': 0,
-                    'end_index': len(time)
-                }
+            # Build signal-specific windows (applied after high-pass filter)
+            # Each signal gets its own window based on its own characteristics
             
-            # Apply window to derived signals used for FRF calculations
-            windowed_signals = {
-                'u': signals['u'] * window,
-                'x': signals['x'] * window,
-                'y': signals['y'] * window
-            }
+            # Create window for u signal
+            window_u, _ = create_signal_based_window(
+                signals['u'],
+                time,
+                params,
+                dt
+            )
             
-            # Extract tool signal if present and apply window
+            # Create window for x signal
+            window_x, _ = create_signal_based_window(
+                signals['x'],
+                time,
+                params,
+                dt
+            )
+            
+            # Create window for y signal
+            window_y, _ = create_signal_based_window(
+                signals['y'],
+                time,
+                params,
+                dt
+            )
+            
+            # Extract tool signal if present and create its window
             tool_signal = None
             if measurement_case == 'case2_x':
                 tool_signal = signals.get('x_tool', None)
                 if tool_signal is not None:
-                    tool_signal = tool_signal * window
+                    window_tool, _ = create_signal_based_window(
+                        tool_signal,
+                        time,
+                        params,
+                        dt
+                    )
+                    tool_signal = tool_signal * window_tool
             elif measurement_case == 'case2_y':
                 tool_signal = signals.get('y_tool', None)
                 if tool_signal is not None:
-                    tool_signal = tool_signal * window
+                    window_tool, _ = create_signal_based_window(
+                        tool_signal,
+                        time,
+                        params,
+                        dt
+                    )
+                    tool_signal = tool_signal * window_tool
+            
+            # Apply each window to its corresponding signal
+            windowed_signals = {
+                'u': signals['u'] * window_u,
+                'x': signals['x'] * window_x,
+                'y': signals['y'] * window_y
+            }
             
             # Calculate CSD/PSD terms for this file
             csd_psd = calculate_csd_psd_terms(time, windowed_signals['u'], windowed_signals['x'], 
@@ -2566,6 +2972,13 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
                              G_tool=tf_results.get('G_tool', None), 
                              G_tool_accel=tf_accel_results.get('G_tool', None),
                              tool_label=tool_bode_label)
+            
+            # Plot real part of transfer functions (always shown)
+            plot_real_transfer_functions(fft_results['frequencies'], tf_results['Gx'], tf_results['Gy'], 
+                                         tf_accel_results['Gx'], tf_accel_results['Gy'], show_plot=True,
+                                         G_tool=tf_results.get('G_tool', None), 
+                                         G_tool_accel=tf_accel_results.get('G_tool', None),
+                                         tool_label=tool_bode_label)
             
             # Show additional plots only if show_all_figures is True
             if show_all_figures:
@@ -2757,54 +3170,83 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
         # Calculate derived signals with measurement case
         signals = calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measurement_case)
 
-        # Build window around primary force event (raised cosine or no window)
-        if params['use_raised_cosine_window']:
-            # Build raised cosine window around primary force event
-            window, window_metadata = create_raised_cosine_window(
-                time,
-                signals['u'],
-                params['window_pre_seconds'],
-                params['window_post_seconds'],
-                params['window_beta'],
-                dt
-            )
-        else:
-            # No windowing: use all-ones window (no effect on signals)
-            window = np.ones_like(time, dtype=float)
-            window_metadata = {
-                'peak_time': time[len(time) // 2],  # Approximate midpoint
-                'start_time': time[0],
-                'end_time': time[-1],
-                'peak_index': len(time) // 2,
-                'start_index': 0,
-                'end_index': len(time)
-            }
-
-        # Apply window to derived signals used for FRF calculations
-        windowed_signals = {
-            'u': signals['u'] * window,
-            'x': signals['x'] * window,
-            'y': signals['y'] * window
-        }
+        # Build signal-specific windows (applied after high-pass filter)
+        # Each signal gets its own window based on its own characteristics
         
-        # Extract tool signal if present and apply window
+        # Create window for u signal
+        window_u, window_metadata_u = create_signal_based_window(
+            signals['u'],
+            time,
+            params,
+            dt
+        )
+        
+        # Create window for x signal
+        window_x, window_metadata_x = create_signal_based_window(
+            signals['x'],
+            time,
+            params,
+            dt
+        )
+        
+        # Create window for y signal
+        window_y, window_metadata_y = create_signal_based_window(
+            signals['y'],
+            time,
+            params,
+            dt
+        )
+        
+        # Extract tool signal if present and create its window
         tool_signal = None
         tool_label = None
+        window_tool = None
+        window_metadata_tool = None
         if measurement_case == 'case2_x':
             tool_signal = signals.get('x_tool', None)
             if tool_signal is not None:
-                tool_signal = tool_signal * window
                 tool_label = 'x_tool'
+                window_tool, window_metadata_tool = create_signal_based_window(
+                    tool_signal,
+                    time,
+                    params,
+                    dt
+                )
         elif measurement_case == 'case2_y':
             tool_signal = signals.get('y_tool', None)
             if tool_signal is not None:
-                tool_signal = tool_signal * window
                 tool_label = 'y_tool'
+                window_tool, window_metadata_tool = create_signal_based_window(
+                    tool_signal,
+                    time,
+                    params,
+                    dt
+                )
+
+        # Apply each window to its corresponding signal
+        windowed_signals = {
+            'u': signals['u'] * window_u,
+            'x': signals['x'] * window_x,
+            'y': signals['y'] * window_y
+        }
+        
+        # Apply tool window if present
+        if tool_signal is not None and window_tool is not None:
+            tool_signal = tool_signal * window_tool
+        
+        # Prepare windows dictionary for plotting
+        windows_dict = {
+            'u': window_u,
+            'x': window_x,
+            'y': window_y
+        }
+        if window_tool is not None:
+            windows_dict['tool'] = window_tool
         
         # Plot time-domain signals with window overlay (only if show_all_figures is True)
         if show_all_figures:
             plot_time_domain_signals(time, windowed_signals['u'], windowed_signals['x'], 
-                                    windowed_signals['y'], show_plot, window=window,
+                                    windowed_signals['y'], show_plot, windows=windows_dict,
                                     tool_accel=tool_signal, tool_label=tool_label)
         
         # Perform frequency domain analysis using either Welch CSD or FFT method
@@ -2878,6 +3320,13 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
                          G_tool_accel=tf_accel_results.get('G_tool', None),
                          tool_label=tool_bode_label)
         
+        # Plot real part of transfer functions (always shown)
+        plot_real_transfer_functions(fft_results['frequencies'], tf_results['Gx'], tf_results['Gy'], 
+                                     tf_accel_results['Gx'], tf_accel_results['Gy'], show_plot,
+                                     G_tool=tf_results.get('G_tool', None), 
+                                     G_tool_accel=tf_accel_results.get('G_tool', None),
+                                     tool_label=tool_bode_label)
+        
         # Plot reconstructed time-domain signals (only if show_all_figures is True, skip for Welch method - X_full is None)
         if show_all_figures and fft_results.get('X_full') is not None:
             Tool_freq_full = fft_results.get('Tool_full', None)
@@ -2898,9 +3347,17 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
             'saved_files': saved_files,
             'sample_rate': 1 / fft_results['dt'],
             'N_samples': fft_results['N'],
-            'window': window,
-            'window_metadata': window_metadata
+            'windows': windows_dict,
+            'window_metadata': {
+                'u': window_metadata_u,
+                'x': window_metadata_x,
+                'y': window_metadata_y
+            }
         }
+        
+        # Add tool window metadata if present
+        if window_metadata_tool is not None:
+            result['window_metadata']['tool'] = window_metadata_tool
         
         # Add tool transfer function if present
         if 'G_tool' in tf_results:
