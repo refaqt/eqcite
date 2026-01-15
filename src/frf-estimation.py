@@ -85,6 +85,9 @@ def get_system_parameters():
     welch_nperseg = 2500       # Length of each segment for Welch method (None = scipy default: 256 or signal length)
     welch_noverlap = 2000      # Number of points to overlap between segments (None = scipy default: nperseg // 2)
     welch_window = 'hann'      # Window type for Welch method
+    
+    # FRF estimator type
+    estimator_type = 'H2'      # FRF estimator type: 'H1', 'H2', 'Hv', or 'ODS'
 
     return {
         'L1': L1,
@@ -110,7 +113,8 @@ def get_system_parameters():
         'window_std_multiplier': window_std_multiplier,
         'welch_nperseg': welch_nperseg,
         'welch_noverlap': welch_noverlap,
-        'welch_window': welch_window
+        'welch_window': welch_window,
+        'estimator_type': estimator_type
     }
 
 # =============================================================================
@@ -937,6 +941,7 @@ def perform_pyfrf_analysis(time, u, x, y, dt, params, tool_signal=None):
     nperseg = params.get('welch_nperseg', None)
     noverlap = params.get('welch_noverlap', None)
     window = params.get('welch_window', 'hann')
+    estimator_type = params.get('estimator_type', 'H2')
     
     # Create FRF instance for x response (acceleration)
     frf_x = FRF(
@@ -945,7 +950,7 @@ def perform_pyfrf_analysis(time, u, x, y, dt, params, tool_signal=None):
         resp=x,
         exc_type='f',  # force
         resp_type='a',  # acceleration
-        frf_type='H2',  # H₂ estimator
+        frf_type=estimator_type,
         nperseg=nperseg,
         noverlap=noverlap,
         window=window
@@ -958,7 +963,7 @@ def perform_pyfrf_analysis(time, u, x, y, dt, params, tool_signal=None):
         resp=y,
         exc_type='f',  # force
         resp_type='a',  # acceleration
-        frf_type='H2',  # H₂ estimator
+        frf_type=estimator_type,
         nperseg=nperseg,
         noverlap=noverlap,
         window=window
@@ -1045,7 +1050,7 @@ def perform_pyfrf_analysis(time, u, x, y, dt, params, tool_signal=None):
             resp=tool_signal,
             exc_type='f',  # force
             resp_type='a',  # acceleration
-            frf_type='H2',  # H₂ estimator
+            frf_type=estimator_type,
             nperseg=nperseg,
             noverlap=noverlap,
             window=window
@@ -2706,6 +2711,7 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
         nperseg = params.get('welch_nperseg', None)
         noverlap = params.get('welch_noverlap', None)
         window = params.get('welch_window', 'hann')
+        estimator_type = params.get('estimator_type', 'H2')
         fs = 1 / min_dt
         fs_int = int(round(fs))  # Convert to int for pyFRF
         
@@ -2717,7 +2723,7 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
             resp=resp_x_3d,
             exc_type='f',  # force
             resp_type='a',  # acceleration
-            frf_type='H2',  # H₂ estimator
+            frf_type=estimator_type,
             nperseg=nperseg,
             noverlap=noverlap,
             window=window
@@ -2729,7 +2735,7 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
             resp=resp_y_3d,
             exc_type='f',  # force
             resp_type='a',  # acceleration
-            frf_type='H2',  # H₂ estimator
+            frf_type=estimator_type,
             nperseg=nperseg,
             noverlap=noverlap,
             window=window
@@ -2812,7 +2818,7 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
                     resp=resp_tool_3d,
                     exc_type='f',  # force
                     resp_type='a',  # acceleration
-                    frf_type='H2',  # H₂ estimator
+                    frf_type=estimator_type,
                     nperseg=nperseg,
                     noverlap=noverlap,
                     window=window
