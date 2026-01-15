@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import warnings
 from scipy import signal
+from pyFRF import FRF
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
@@ -80,12 +81,10 @@ def get_system_parameters():
     window_sliding_size = 100  # Size of sliding window in samples for low_percent detection
     window_std_multiplier = 3.0  # Multiplier for standard deviation in low_percent condition
     
-    # Welch method parameters for CSD-based transfer function estimation
-    use_welch_csd = True       # Toggle to enable/disable Welch CSD method (default: True)
+    # Welch method parameters for pyFRF (used for CSD-based transfer function estimation)
     welch_nperseg = 2500       # Length of each segment for Welch method (None = scipy default: 256 or signal length)
     welch_noverlap = 2000      # Number of points to overlap between segments (None = scipy default: nperseg // 2)
     welch_window = 'hann'      # Window type for Welch method
-    welch_scaling = 'density'   # PSD scaling: 'density' or 'spectrum'
 
     return {
         'L1': L1,
@@ -109,11 +108,9 @@ def get_system_parameters():
         'window_low_percent': window_low_percent,
         'window_sliding_size': window_sliding_size,
         'window_std_multiplier': window_std_multiplier,
-        'use_welch_csd': use_welch_csd,
         'welch_nperseg': welch_nperseg,
         'welch_noverlap': welch_noverlap,
-        'welch_window': welch_window,
-        'welch_scaling': welch_scaling
+        'welch_window': welch_window
     }
 
 # =============================================================================
@@ -903,111 +900,13 @@ def create_signal_based_window(sig, time, params, dt):
 # FREQUENCY DOMAIN ANALYSIS
 # =============================================================================
 
-def perform_fft_analysis(time, u, x, y, dt, tool_signal=None):
+def perform_pyfrf_analysis(time, u, x, y, dt, params, tool_signal=None):
     """
-    Perform FFT and return frequencies, X, Y, U in frequency domain.
+    Perform FRF analysis using pyFRF library.
+    Uses H₂ estimator: H₂(ω) = G_output_output(ω) / G_output_input(ω).
     Note: x and y are accelerations and will be double-integrated to displacements.
-    Also returns acceleration FFT results for comparison.
+    Also returns acceleration-based transfer functions for comparison.
     Optionally processes tool acceleration signal if provided.
-    
-    Parameters:
-    -----------
-    time : array_like
-        Time array in seconds
-    u : array_like
-        Force signal (time domain)
-    x, y : array_like
-        Acceleration signals in time domain (m/s²)
-    dt : float
-        Sample time in seconds
-    tool_signal : array_like, optional
-        Tool acceleration signal in time domain (m/s²) - x_tool or y_tool
-        
-    Returns:
-    --------
-    dict : Dictionary containing frequency array and FFT results
-        Includes both displacement (X, Y) and acceleration (X_accel, Y_accel) results
-        Optionally includes Tool and Tool_accel if tool_signal is provided
-    """
-    N = len(time)
-    fs = 1 / dt  # Sampling frequency
-    
-    # Perform FFT
-    U = np.fft.fft(u)
-    X_accel = np.fft.fft(x)  # FFT of acceleration
-    Y_accel = np.fft.fft(y)  # FFT of acceleration
-    
-    # Generate frequency array
-    frequencies = np.fft.fftfreq(N, dt)
-    omega = 2 * np.pi * frequencies  # Angular frequency (rad/s)
-    
-    # Double integration using discrete transfer function
-    # H(e^(jω)) = dt²/(1-e^(-jω))²
-    z = np.exp(1j * omega * dt)
-    H = dt**2 / (1 - z**(-1))**2
-    # H = -1 / omega ** 2
-
-    # Apply transfer function to convert acceleration to displacement
-    X = np.zeros_like(X_accel, dtype=complex)
-    Y = np.zeros_like(Y_accel, dtype=complex)
-    
-    # Avoid division by zero at DC (frequency = 0)
-    X[1:] = X_accel[1:] * H[1:]
-    Y[1:] = Y_accel[1:] * H[1:]
-    
-    # DC component (zero frequency) set to zero
-    X[0] = 0
-    Y[0] = 0
-    
-    # Process tool signal if provided
-    if tool_signal is not None:
-        Tool_accel = np.fft.fft(tool_signal)
-        Tool = np.zeros_like(Tool_accel, dtype=complex)
-        Tool[1:] = Tool_accel[1:] * H[1:]
-        Tool[0] = 0
-    else:
-        Tool_accel = None
-        Tool = None
-    
-    # Use only positive frequencies (including DC)
-    positive_freq_mask = frequencies >= 0
-    frequencies_pos = frequencies[positive_freq_mask]
-    U_pos = U[positive_freq_mask]
-    X_pos = X[positive_freq_mask]
-    Y_pos = Y[positive_freq_mask]
-    X_accel_pos = X_accel[positive_freq_mask]
-    Y_accel_pos = Y_accel[positive_freq_mask]
-    
-    result = {
-        'frequencies': frequencies_pos,
-        'U': U_pos,
-        'X': X_pos,
-        'Y': Y_pos,
-        'X_accel': X_accel_pos,
-        'Y_accel': Y_accel_pos,
-        'X_full': X,  # Full spectrum (positive and negative frequencies)
-        'Y_full': Y,  # Full spectrum (positive and negative frequencies)
-        'N': N,
-        'dt': dt
-    }
-    
-    # Add tool results if available
-    if tool_signal is not None:
-        Tool_pos = Tool[positive_freq_mask]
-        Tool_accel_pos = Tool_accel[positive_freq_mask]
-        result['Tool'] = Tool_pos
-        result['Tool_accel'] = Tool_accel_pos
-        result['Tool_full'] = Tool  # Full spectrum
-    
-    return result
-
-def calculate_csd_psd_terms(time, u, x, y, dt, params, tool_signal=None):
-    """
-    Calculate cross-spectral density (CSD) and power spectral density (PSD) terms
-    for a single measurement file using Welch method.
-    
-    This function extracts the CSD/PSD calculation logic for use in multi-file averaging.
-    It returns the raw spectral density terms without calculating transfer functions or coherence.
     
     Parameters:
     -----------
@@ -1026,289 +925,192 @@ def calculate_csd_psd_terms(time, u, x, y, dt, params, tool_signal=None):
         
     Returns:
     --------
-    dict : Dictionary containing CSD/PSD terms
-        'Gxu_accel': Cross-spectral density between u and x (complex)
-        'Gyu_accel': Cross-spectral density between u and y (complex)
-        'Guu': Power spectral density of u (real)
-        'Gxx_accel': Power spectral density of x (real)
-        'Gyy_accel': Power spectral density of y (real)
-        'frequencies': Frequency array (Hz)
-        'dt': Sample time (s)
-        'N': Number of samples
-        'G_tool_u_accel': Cross-spectral density between u and tool (complex, optional)
-        'G_tool_tool_accel': Power spectral density of tool (real, optional)
-        'frequencies_tool': Frequency array for tool (Hz, optional)
+    dict : Dictionary containing frequency array and transfer function results
+        Includes both displacement (X, Y) and acceleration (X_accel, Y_accel) results
+        Optionally includes Tool and Tool_accel if tool_signal is provided
     """
     N = len(time)
     fs = 1 / dt  # Sampling frequency
+    fs_int = int(round(fs))  # Convert to int for pyFRF
     
     # Extract Welch method parameters
     nperseg = params.get('welch_nperseg', None)
     noverlap = params.get('welch_noverlap', None)
     window = params.get('welch_window', 'hann')
-    scaling = params.get('welch_scaling', 'density')
     
-    # Calculate cross-spectral densities and power spectral densities
-    # For acceleration signals (x, y are accelerations)
-    frequencies, Gxu_accel = signal.csd(u, x, fs=fs, nperseg=nperseg, noverlap=noverlap, 
-                                       window=window, scaling=scaling, return_onesided=True)
-    frequencies, Gyu_accel = signal.csd(u, y, fs=fs, nperseg=nperseg, noverlap=noverlap, 
-                                       window=window, scaling=scaling, return_onesided=True)
-    frequencies, Guu = signal.welch(u, fs=fs, nperseg=nperseg, noverlap=noverlap, 
-                                    window=window, scaling=scaling, return_onesided=True)
-    frequencies, Gxx_accel = signal.welch(x, fs=fs, nperseg=nperseg, noverlap=noverlap, 
-                                          window=window, scaling=scaling, return_onesided=True)
-    frequencies, Gyy_accel = signal.welch(y, fs=fs, nperseg=nperseg, noverlap=noverlap, 
-                                          window=window, scaling=scaling, return_onesided=True)
+    # Create FRF instance for x response (acceleration)
+    frf_x = FRF(
+        sampling_freq=fs_int,
+        exc=u,
+        resp=x,
+        exc_type='f',  # force
+        resp_type='a',  # acceleration
+        frf_type='H2',  # H₂ estimator
+        nperseg=nperseg,
+        noverlap=noverlap,
+        window=window
+    )
     
-    result = {
-        'Gxu_accel': Gxu_accel,
-        'Gyu_accel': Gyu_accel,
-        'Guu': Guu,
-        'Gxx_accel': Gxx_accel,
-        'Gyy_accel': Gyy_accel,
-        'frequencies': frequencies,
-        'dt': dt,
-        'N': N
-    }
+    # Create FRF instance for y response (acceleration)
+    frf_y = FRF(
+        sampling_freq=fs_int,
+        exc=u,
+        resp=y,
+        exc_type='f',  # force
+        resp_type='a',  # acceleration
+        frf_type='H2',  # H₂ estimator
+        nperseg=nperseg,
+        noverlap=noverlap,
+        window=window
+    )
+    
+    # Get frequency axis
+    frequencies = frf_x.get_f_axis()
+    
+    # Get acceleration transfer functions (accelerance: acceleration/force)
+    # get_FRF() returns shape (resp_dofs, exc_dofs, frequency_series) for 3D or (resp_dofs, frequency_series) for 2D
+    Gx_accel_full = frf_x.get_FRF(form='accelerance')
+    Gy_accel_full = frf_y.get_FRF(form='accelerance')
+    
+    # Get displacement transfer functions (receptance: displacement/force)
+    Gx_disp_full = frf_x.get_FRF(form='receptance')
+    Gy_disp_full = frf_y.get_FRF(form='receptance')
+    
+    # Extract 1D arrays for single input/output - acceleration
+    if Gx_accel_full.ndim == 3:
+        Gx_accel = Gx_accel_full[0, 0, :]  # Extract (frequency_series,)
+    elif Gx_accel_full.ndim == 2:
+        Gx_accel = Gx_accel_full[0, :]  # Extract (frequency_series,)
+    else:
+        Gx_accel = Gx_accel_full  # Already 1D
+    
+    if Gy_accel_full.ndim == 3:
+        Gy_accel = Gy_accel_full[0, 0, :]  # Extract (frequency_series,)
+    elif Gy_accel_full.ndim == 2:
+        Gy_accel = Gy_accel_full[0, :]  # Extract (frequency_series,)
+    else:
+        Gy_accel = Gy_accel_full  # Already 1D
+    
+    # Extract 1D arrays for single input/output - displacement
+    if Gx_disp_full.ndim == 3:
+        Gx = Gx_disp_full[0, 0, :]  # Extract (frequency_series,)
+    elif Gx_disp_full.ndim == 2:
+        Gx = Gx_disp_full[0, :]  # Extract (frequency_series,)
+    else:
+        Gx = Gx_disp_full  # Already 1D
+    
+    if Gy_disp_full.ndim == 3:
+        Gy = Gy_disp_full[0, 0, :]  # Extract (frequency_series,)
+    elif Gy_disp_full.ndim == 2:
+        Gy = Gy_disp_full[0, :]  # Extract (frequency_series,)
+    else:
+        Gy = Gy_disp_full  # Already 1D
+    
+    # Replace NaN values with 0 for displacement FRFs
+    Gx = np.nan_to_num(Gx, nan=0.0)
+    Gy = np.nan_to_num(Gy, nan=0.0)
+    
+    # Replace NaN values with 0 for acceleration FRFs
+    Gx_accel = np.nan_to_num(Gx_accel, nan=0.0)
+    Gy_accel = np.nan_to_num(Gy_accel, nan=0.0)
+    
+    # Get coherence (returns shape (resp_dofs, frequency_series) for 2D or 1D)
+    coherence_ux_full = frf_x.get_coherence()
+    coherence_uy_full = frf_y.get_coherence()
+    
+    if coherence_ux_full.ndim == 2:
+        coherence_ux = coherence_ux_full[0, :]  # Extract (frequency_series,)
+    else:
+        coherence_ux = coherence_ux_full  # Already 1D
+    
+    if coherence_uy_full.ndim == 2:
+        coherence_uy = coherence_uy_full[0, :]  # Extract (frequency_series,)
+    else:
+        coherence_uy = coherence_uy_full  # Already 1D
+    
+    # Get PSD of input force (Guu) for U calculation
+    # pyFRF stores this internally, but we need to extract it
+    # For now, we'll calculate it from the FRF and coherence
+    # Actually, we can get it from the internal CSD/PSD if available
+    # Let's use scipy.welch for Guu to maintain compatibility
+    _, Guu = signal.welch(u, fs=fs, nperseg=nperseg, noverlap=noverlap, 
+                         window=window, scaling='density', return_onesided=True)
     
     # Process tool signal if provided
     if tool_signal is not None:
-        frequencies_tool, G_tool_u_accel = signal.csd(u, tool_signal, fs=fs, nperseg=nperseg, 
-                                                      noverlap=noverlap, window=window, 
-                                                      scaling=scaling, return_onesided=True)
-        frequencies_tool, G_tool_tool_accel = signal.welch(tool_signal, fs=fs, nperseg=nperseg, 
-                                                           noverlap=noverlap, window=window, 
-                                                           scaling=scaling, return_onesided=True)
-        result['G_tool_u_accel'] = G_tool_u_accel
-        result['G_tool_tool_accel'] = G_tool_tool_accel
-        result['frequencies_tool'] = frequencies_tool
-    
-    return result
-
-def average_csd_psd_terms(csd_psd_list):
-    """
-    Average cross-spectral density (CSD) and power spectral density (PSD) terms
-    across multiple measurement files.
-    
-    Parameters:
-    -----------
-    csd_psd_list : list
-        List of CSD/PSD dictionaries from calculate_csd_psd_terms()
+        # Create FRF instance for tool response (acceleration)
+        frf_tool = FRF(
+            sampling_freq=fs_int,
+            exc=u,
+            resp=tool_signal,
+            exc_type='f',  # force
+            resp_type='a',  # acceleration
+            frf_type='H2',  # H₂ estimator
+            nperseg=nperseg,
+            noverlap=noverlap,
+            window=window
+        )
         
-    Returns:
-    --------
-    dict : Averaged CSD/PSD dictionary with same structure as input
-    """
-    if not csd_psd_list:
-        raise ValueError("Cannot average empty list of CSD/PSD terms")
-    
-    if len(csd_psd_list) == 1:
-        # Single file, return as-is
-        return csd_psd_list[0].copy()
-    
-    # Check that all dictionaries have the same frequency arrays
-    first_freq = csd_psd_list[0]['frequencies']
-    for i, csd_psd in enumerate(csd_psd_list[1:], 1):
-        if not np.allclose(csd_psd['frequencies'], first_freq, rtol=1e-10):
-            raise ValueError(f"Frequency arrays differ between files. File 0 and file {i} have different frequency arrays.")
-    
-    # Check that all have same dt
-    first_dt = csd_psd_list[0]['dt']
-    for i, csd_psd in enumerate(csd_psd_list[1:], 1):
-        if not np.isclose(csd_psd['dt'], first_dt, rtol=1e-10):
-            raise ValueError(f"Sample times differ between files. File 0 has dt={first_dt}, file {i} has dt={csd_psd['dt']}")
-    
-    # Initialize averaged dictionary
-    averaged = {
-        'frequencies': first_freq.copy(),
-        'dt': first_dt,
-        'N': csd_psd_list[0]['N']  # Use first file's N (should be same after truncation)
-    }
-    
-    # Average complex CSD terms (element-wise)
-    n_files = len(csd_psd_list)
-    averaged['Gxu_accel'] = np.mean([csd_psd['Gxu_accel'] for csd_psd in csd_psd_list], axis=0)
-    averaged['Gyu_accel'] = np.mean([csd_psd['Gyu_accel'] for csd_psd in csd_psd_list], axis=0)
-    
-    # Average real PSD terms (element-wise)
-    averaged['Guu'] = np.mean([csd_psd['Guu'] for csd_psd in csd_psd_list], axis=0)
-    averaged['Gxx_accel'] = np.mean([csd_psd['Gxx_accel'] for csd_psd in csd_psd_list], axis=0)
-    averaged['Gyy_accel'] = np.mean([csd_psd['Gyy_accel'] for csd_psd in csd_psd_list], axis=0)
-    
-    # Handle tool signals if present
-    has_tool = all('G_tool_u_accel' in csd_psd for csd_psd in csd_psd_list)
-    if has_tool:
-        # Check that all tool frequency arrays match
-        first_tool_freq = csd_psd_list[0]['frequencies_tool']
-        for i, csd_psd in enumerate(csd_psd_list[1:], 1):
-            if 'frequencies_tool' not in csd_psd:
-                raise ValueError(f"File {i} missing tool frequency array")
-            if not np.allclose(csd_psd['frequencies_tool'], first_tool_freq, rtol=1e-10):
-                raise ValueError(f"Tool frequency arrays differ between files. File 0 and file {i} have different tool frequency arrays.")
+        frequencies_tool = frf_tool.get_f_axis()
+        G_tool_accel_full = frf_tool.get_FRF(form='accelerance')
+        G_tool_disp_full = frf_tool.get_FRF(form='receptance')
+        coherence_tool_full = frf_tool.get_coherence()
         
-        averaged['frequencies_tool'] = first_tool_freq.copy()
-        averaged['G_tool_u_accel'] = np.mean([csd_psd['G_tool_u_accel'] for csd_psd in csd_psd_list], axis=0)
-        averaged['G_tool_tool_accel'] = np.mean([csd_psd['G_tool_tool_accel'] for csd_psd in csd_psd_list], axis=0)
-    
-    return averaged
-
-def calculate_tf_from_averaged_csd_psd(averaged_csd_psd, params, dt):
-    """
-    Calculate transfer functions and coherence from averaged CSD/PSD terms.
-    
-    Parameters:
-    -----------
-    averaged_csd_psd : dict
-        Averaged CSD/PSD dictionary from average_csd_psd_terms()
-    params : dict
-        System parameters dictionary
-    dt : float
-        Sample time in seconds
-        
-    Returns:
-    --------
-    dict : Dictionary containing frequency array and transfer function results
-        Same structure as perform_welch_csd_analysis() for compatibility
-    """
-    frequencies = averaged_csd_psd['frequencies']
-    N = averaged_csd_psd['N']
-    fs = 1 / dt
-    
-    # Extract averaged CSD/PSD terms
-    Gxu_accel = averaged_csd_psd['Gxu_accel']
-    Gyu_accel = averaged_csd_psd['Gyu_accel']
-    Guu = averaged_csd_psd['Guu']
-    Gxx_accel = averaged_csd_psd['Gxx_accel']
-    Gyy_accel = averaged_csd_psd['Gyy_accel']
-    
-    # Calculate H₂ estimator for acceleration: H₂ = G_output_output / G_output_input
-    # For Gx: H₂ = Gxx / Gxu (x is output, u is input)
-    # For Gy: H₂ = Gyy / Gyu (y is output, u is input)
-    threshold = 1e-12
-    Gx_accel = np.zeros_like(Gxu_accel, dtype=complex)
-    Gy_accel = np.zeros_like(Gyu_accel, dtype=complex)
-    
-    # Avoid division by zero
-    Gxu_mag = np.abs(Gxu_accel)
-    Gyu_mag = np.abs(Gyu_accel)
-    valid_mask_x = Gxu_mag > threshold
-    valid_mask_y = Gyu_mag > threshold
-    
-    # Calculate H₂ estimator
-    Gx_accel[valid_mask_x] = Gxx_accel[valid_mask_x] / Gxu_accel[valid_mask_x]
-    Gy_accel[valid_mask_y] = Gyy_accel[valid_mask_y] / Gyu_accel[valid_mask_y]
-    
-    # Set invalid points to NaN
-    Gx_accel[~valid_mask_x] = np.nan
-    Gy_accel[~valid_mask_y] = np.nan
-    
-    # Calculate coherence: γ²(ω) = |Gxy|² / (Gxx · Gyy)
-    # For input-output coherence: γ²_ux = |Gxu|² / (Guu · Gxx)
-    #                             γ²_uy = |Gyu|² / (Guu · Gyy)
-    coherence_ux = np.zeros_like(frequencies, dtype=float)
-    coherence_uy = np.zeros_like(frequencies, dtype=float)
-    
-    # Calculate denominator: Guu · Gxx_accel and Guu · Gyy_accel
-    denominator_ux = Guu * Gxx_accel
-    denominator_uy = Guu * Gyy_accel
-    
-    # Calculate |Gxu_accel|² and |Gyu_accel|²
-    Gxu_mag_squared = np.abs(Gxu_accel)**2
-    Gyu_mag_squared = np.abs(Gyu_accel)**2
-    
-    # Calculate coherence with threshold to avoid division by zero
-    valid_mask_coherence_ux = denominator_ux > threshold
-    valid_mask_coherence_uy = denominator_uy > threshold
-    
-    coherence_ux[valid_mask_coherence_ux] = Gxu_mag_squared[valid_mask_coherence_ux] / denominator_ux[valid_mask_coherence_ux]
-    coherence_uy[valid_mask_coherence_uy] = Gyu_mag_squared[valid_mask_coherence_uy] / denominator_uy[valid_mask_coherence_uy]
-    
-    # Set invalid points to NaN
-    coherence_ux[~valid_mask_coherence_ux] = np.nan
-    coherence_uy[~valid_mask_coherence_uy] = np.nan
-    
-    # Clamp coherence values to [0, 1] range (should already be in this range, but ensure it)
-    coherence_ux = np.clip(coherence_ux, 0.0, 1.0)
-    coherence_uy = np.clip(coherence_uy, 0.0, 1.0)
-    
-    # Convert acceleration transfer functions to displacement transfer functions
-    # Apply double integration transfer function: H(e^(jω)) = dt²/(1-e^(-jω))²
-    omega = 2 * np.pi * frequencies
-    z = np.exp(1j * omega * dt)
-    H = dt**2 / (1 - z**(-1))**2
-    
-    # Avoid division by zero at DC (frequency = 0)
-    Gx = np.zeros_like(Gx_accel, dtype=complex)
-    Gy = np.zeros_like(Gy_accel, dtype=complex)
-    Gx[1:] = Gx_accel[1:] * H[1:]
-    Gy[1:] = Gy_accel[1:] * H[1:]
-    Gx[0] = 0
-    Gy[0] = 0
-    
-    # Process tool signal if present
-    if 'G_tool_u_accel' in averaged_csd_psd:
-        G_tool_u_accel = averaged_csd_psd['G_tool_u_accel']
-        G_tool_tool_accel = averaged_csd_psd['G_tool_tool_accel']
-        frequencies_tool = averaged_csd_psd['frequencies_tool']
-        
-        # Calculate H₂ estimator for tool acceleration
-        G_tool_u_mag = np.abs(G_tool_u_accel)
-        valid_mask_tool = G_tool_u_mag > threshold
-        G_tool_accel = np.zeros_like(G_tool_u_accel, dtype=complex)
-        G_tool_accel[valid_mask_tool] = G_tool_tool_accel[valid_mask_tool] / G_tool_u_accel[valid_mask_tool]
-        G_tool_accel[~valid_mask_tool] = np.nan
-        
-        # Convert to displacement using tool frequencies
-        omega_tool = 2 * np.pi * frequencies_tool
-        z_tool = np.exp(1j * omega_tool * dt)
-        H_tool = dt**2 / (1 - z_tool**(-1))**2
-        Tool_accel = G_tool_accel
-        Tool = np.zeros_like(Tool_accel, dtype=complex)
-        Tool[1:] = Tool_accel[1:] * H_tool[1:]
-        Tool[0] = 0
-        
-        # Calculate tool coherence: γ²_tool = |G_tool_u_accel|² / (Guu · G_tool_tool_accel)
-        # Need to interpolate Guu to tool frequencies if they differ
-        if len(frequencies_tool) == len(frequencies):
-            # Same frequency array, use directly
-            Guu_tool = Guu
+        # Extract 1D array for single input/output - acceleration
+        if G_tool_accel_full.ndim == 3:
+            G_tool_accel = G_tool_accel_full[0, 0, :]  # Extract (frequency_series,)
+        elif G_tool_accel_full.ndim == 2:
+            G_tool_accel = G_tool_accel_full[0, :]  # Extract (frequency_series,)
         else:
-            # Interpolate Guu to tool frequencies
-            from scipy.interpolate import interp1d
-            valid_guu = np.isfinite(Guu) & (Guu > 0)
-            if np.any(valid_guu):
-                interp_func = interp1d(frequencies[valid_guu], Guu[valid_guu], 
-                                     kind='linear', bounds_error=False, fill_value=np.nan)
-                Guu_tool = interp_func(frequencies_tool)
-            else:
-                Guu_tool = np.full_like(frequencies_tool, np.nan)
+            G_tool_accel = G_tool_accel_full  # Already 1D
         
-        coherence_tool = np.zeros_like(frequencies_tool, dtype=float)
-        denominator_tool = Guu_tool * G_tool_tool_accel
-        G_tool_u_mag_squared = np.abs(G_tool_u_accel)**2
-        valid_mask_coherence_tool = denominator_tool > threshold
+        # Extract 1D array for single input/output - displacement
+        if G_tool_disp_full.ndim == 3:
+            Tool = G_tool_disp_full[0, 0, :]  # Extract (frequency_series,)
+        elif G_tool_disp_full.ndim == 2:
+            Tool = G_tool_disp_full[0, :]  # Extract (frequency_series,)
+        else:
+            Tool = G_tool_disp_full  # Already 1D
         
-        coherence_tool[valid_mask_coherence_tool] = G_tool_u_mag_squared[valid_mask_coherence_tool] / denominator_tool[valid_mask_coherence_tool]
-        coherence_tool[~valid_mask_coherence_tool] = np.nan
-        coherence_tool = np.clip(coherence_tool, 0.0, 1.0)
+        if coherence_tool_full.ndim == 2:
+            coherence_tool = coherence_tool_full[0, :]  # Extract (frequency_series,)
+        else:
+            coherence_tool = coherence_tool_full  # Already 1D
+        
+        # Replace NaN values with 0 for tool FRFs
+        Tool = np.nan_to_num(Tool, nan=0.0)
+        G_tool_accel = np.nan_to_num(G_tool_accel, nan=0.0)
     else:
         Tool_accel = None
         Tool = None
         coherence_tool = None
+        frequencies_tool = None
     
     # Create U array for compatibility with plot_force_psd
     # plot_force_psd calculates: PSD = (2 / (N * fs)) * |U|²
     # For Welch, we have Guu which is already PSD, so: U = sqrt(Guu * N * fs / 2)
-    valid_mask_guu = np.isfinite(Guu) & (Guu > 0)
+    # Interpolate Guu to match frequencies if needed
+    if len(Guu) == len(frequencies):
+        Guu_aligned = Guu
+    else:
+        from scipy.interpolate import interp1d
+        freq_guu = np.fft.rfftfreq(N, dt)[:len(Guu)]
+        valid_guu = np.isfinite(Guu) & (Guu > 0)
+        if np.any(valid_guu):
+            interp_func = interp1d(freq_guu[valid_guu], Guu[valid_guu], 
+                                 kind='linear', bounds_error=False, fill_value=np.nan)
+            Guu_aligned = interp_func(frequencies)
+        else:
+            Guu_aligned = np.full_like(frequencies, np.nan)
+    
+    valid_mask_guu = np.isfinite(Guu_aligned) & (Guu_aligned > 0)
     U_pos = np.zeros_like(frequencies, dtype=complex)
     if np.any(valid_mask_guu):
         # Calculate U magnitude from PSD (Guu)
-        U_magnitude = np.sqrt(Guu[valid_mask_guu] * N * fs / 2)
+        U_magnitude = np.sqrt(Guu_aligned[valid_mask_guu] * N * fs / 2)
         U_pos[valid_mask_guu] = U_magnitude.astype(complex)
     
-    # Return results directly using Welch frequencies (no interpolation)
-    # Skip full spectrum arrays since we're not reconstructing time signals
+    # Return results with same structure as perform_welch_csd_analysis
     result = {
         'frequencies': frequencies,
         'U': U_pos,  # U from PSD
@@ -1325,9 +1127,9 @@ def calculate_tf_from_averaged_csd_psd(averaged_csd_psd, params, dt):
     }
     
     # Add tool results if available
-    if Tool is not None:
+    if tool_signal is not None:
         result['Tool'] = Tool
-        result['Tool_accel'] = Tool_accel
+        result['Tool_accel'] = G_tool_accel
         result['Tool_full'] = None  # Not used - skipping time signal reconstruction
         result['coherence_tool'] = coherence_tool  # Coherence between input u and tool output
     
@@ -1535,56 +1337,6 @@ def perform_welch_csd_analysis(time, u, x, y, dt, params, tool_signal=None):
         result['Tool_accel'] = Tool_accel
         result['Tool_full'] = None  # Not used - skipping time signal reconstruction
         result['coherence_tool'] = coherence_tool  # Coherence between input u and tool output
-    
-    return result
-
-def calculate_transfer_functions(X, Y, U, threshold=1e-12, Tool=None):
-    """
-    Calculate Gx = X/U and Gy = Y/U transfer functions.
-    Optionally calculates G_tool = Tool/U if Tool is provided.
-    
-    Parameters:
-    -----------
-    X, Y, U : array_like
-        FFT results in frequency domain
-    threshold : float
-        Minimum magnitude threshold to avoid division by zero
-    Tool : array_like, optional
-        Tool displacement FFT results in frequency domain
-        
-    Returns:
-    --------
-    dict : Dictionary containing transfer functions Gx and Gy
-        Optionally includes G_tool if Tool is provided
-    """
-    # Avoid division by zero
-    U_magnitude = np.abs(U)
-    valid_mask = U_magnitude > threshold
-    
-    # Initialize arrays
-    Gx = np.zeros_like(X, dtype=complex)
-    Gy = np.zeros_like(Y, dtype=complex)
-    
-    # Calculate transfer functions where U is not zero
-    Gx[valid_mask] = X[valid_mask] / U[valid_mask]
-    Gy[valid_mask] = Y[valid_mask] / U[valid_mask]
-    
-    # Set invalid points to NaN
-    Gx[~valid_mask] = np.nan
-    Gy[~valid_mask] = np.nan
-    
-    result = {
-        'Gx': Gx,
-        'Gy': Gy,
-        'valid_mask': valid_mask
-    }
-    
-    # Calculate tool transfer function if provided
-    if Tool is not None:
-        G_tool = np.zeros_like(Tool, dtype=complex)
-        G_tool[valid_mask] = Tool[valid_mask] / U[valid_mask]
-        G_tool[~valid_mask] = np.nan
-        result['G_tool'] = G_tool
     
     return result
 
@@ -2018,6 +1770,8 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
         # Convert to degrees
         Gx_accel_phase = np.degrees(Gx_accel_phase)
         Gy_accel_phase = np.degrees(Gy_accel_phase)
+    else:
+        pass
     
     # Process tool compliance if provided
     if G_tool is not None:
@@ -2047,12 +1801,35 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
     
     # Process acceleration data if provided
     if Gx_accel is not None and Gy_accel is not None:
-        valid_mask_accel = np.isfinite(Gx_accel_mag) & np.isfinite(Gy_accel_mag) & np.isfinite(Gx_accel_phase) & np.isfinite(Gy_accel_phase)
-        valid_freq_accel = frequencies[valid_mask_accel]
-        valid_Gx_accel_mag = Gx_accel_mag[valid_mask_accel]
-        valid_Gy_accel_mag = Gy_accel_mag[valid_mask_accel]
-        valid_Gx_accel_phase = Gx_accel_phase[valid_mask_accel]
-        valid_Gy_accel_phase = Gy_accel_phase[valid_mask_accel]
+        # Skip DC component (index 0) which may contain NaN/Inf, then filter
+        # Start from index 1 to avoid DC issues
+        if len(frequencies) > 1:
+            freq_accel = frequencies[1:]
+            Gx_accel_mag_filtered = Gx_accel_mag[1:]
+            Gy_accel_mag_filtered = Gy_accel_mag[1:]
+            Gx_accel_phase_filtered = Gx_accel_phase[1:]
+            Gy_accel_phase_filtered = Gy_accel_phase[1:]
+        else:
+            freq_accel = frequencies
+            Gx_accel_mag_filtered = Gx_accel_mag
+            Gy_accel_mag_filtered = Gy_accel_mag
+            Gx_accel_phase_filtered = Gx_accel_phase
+            Gy_accel_phase_filtered = Gy_accel_phase
+        
+        # Now filter for finite values
+        valid_mask_accel = np.isfinite(Gx_accel_mag_filtered) & np.isfinite(Gy_accel_mag_filtered) & np.isfinite(Gx_accel_phase_filtered) & np.isfinite(Gy_accel_phase_filtered)
+        valid_freq_accel = freq_accel[valid_mask_accel]
+        valid_Gx_accel_mag = Gx_accel_mag_filtered[valid_mask_accel]
+        valid_Gy_accel_mag = Gy_accel_mag_filtered[valid_mask_accel]
+        valid_Gx_accel_phase = Gx_accel_phase_filtered[valid_mask_accel]
+        valid_Gy_accel_phase = Gy_accel_phase_filtered[valid_mask_accel]
+    else:
+        # Initialize empty arrays if acceleration data is not available
+        valid_freq_accel = np.array([])
+        valid_Gx_accel_mag = np.array([])
+        valid_Gy_accel_mag = np.array([])
+        valid_Gx_accel_phase = np.array([])
+        valid_Gy_accel_phase = np.array([])
     
     # Process tool data if provided
     if G_tool is not None:
@@ -2076,14 +1853,7 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
         valid_Gx_phase = valid_Gx_phase[1:]
         valid_Gy_phase = valid_Gy_phase[1:]
     
-    # Skip DC component for acceleration data
-    if Gx_accel is not None and Gy_accel is not None:
-        if len(valid_freq_accel) > 1 and valid_freq_accel[0] == 0:
-            valid_freq_accel = valid_freq_accel[1:]
-            valid_Gx_accel_mag = valid_Gx_accel_mag[1:]
-            valid_Gy_accel_mag = valid_Gy_accel_mag[1:]
-            valid_Gx_accel_phase = valid_Gx_accel_phase[1:]
-            valid_Gy_accel_phase = valid_Gy_accel_phase[1:]
+    # DC component already skipped during filtering, so no need to skip again here
     
     # Skip DC component for tool data
     if G_tool is not None:
@@ -2111,7 +1881,7 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
     
     # Plot Gx magnitude (top-left)
     ax[0, 0].loglog(valid_freq, valid_Gx_mag, 'b-', linewidth=2, label='Gx (Displacement)')
-    if Gx_accel is not None:
+    if Gx_accel is not None and len(valid_freq_accel) > 0:
         ax[0, 0].loglog(valid_freq_accel, valid_Gx_accel_mag, 'b--', linewidth=2, alpha=0.7, label='Gx (Acceleration)')
     ax[0, 0].set_ylabel('Compliance (m/N or m/s²/N)')
     ax[0, 0].set_title('Compliance Gx (X/U) - Magnitude')
@@ -2120,7 +1890,7 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
     
     # Plot Gy magnitude (top-middle)
     ax[0, 1].loglog(valid_freq, valid_Gy_mag, 'r-', linewidth=2, label='Gy (Displacement)')
-    if Gy_accel is not None:
+    if Gy_accel is not None and len(valid_freq_accel) > 0:
         ax[0, 1].loglog(valid_freq_accel, valid_Gy_accel_mag, 'r--', linewidth=2, alpha=0.7, label='Gy (Acceleration)')
     ax[0, 1].set_ylabel('Compliance (m/N or m/s²/N)')
     ax[0, 1].set_title('Compliance Gy (Y/U) - Magnitude')
@@ -2140,7 +1910,7 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
     
     # Plot Gx phase (bottom-left)
     ax[1, 0].semilogx(valid_freq, valid_Gx_phase, 'b-', linewidth=2, label='Gx (Displacement)')
-    if Gx_accel is not None:
+    if Gx_accel is not None and len(valid_freq_accel) > 0:
         ax[1, 0].semilogx(valid_freq_accel, valid_Gx_accel_phase, 'b--', linewidth=2, alpha=0.7, label='Gx (Acceleration)')
     ax[1, 0].set_xlabel('Frequency (Hz)')
     ax[1, 0].set_ylabel('Phase (degrees)')
@@ -2151,7 +1921,7 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
     
     # Plot Gy phase (bottom-middle)
     ax[1, 1].semilogx(valid_freq, valid_Gy_phase, 'r-', linewidth=2, label='Gy (Displacement)')
-    if Gy_accel is not None:
+    if Gy_accel is not None and len(valid_freq_accel) > 0:
         ax[1, 1].semilogx(valid_freq_accel, valid_Gy_accel_phase, 'r--', linewidth=2, alpha=0.7, label='Gy (Acceleration)')
     ax[1, 1].set_xlabel('Frequency (Hz)')
     ax[1, 1].set_ylabel('Phase (degrees)')
@@ -2738,9 +2508,6 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
         # Load system parameters
         params = get_system_parameters()
         
-        # Force Welch CSD method for multiple files
-        params['use_welch_csd'] = True
-        
         # Parse filename for metadata (use first file)
         metadata = parse_filename(filepaths[0])
         
@@ -2787,8 +2554,12 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
                 data['A6'] = data['A6'][:min_length]
                 data['A7'] = data['A7'][:min_length]
         
-        # Process each file and calculate CSD/PSD terms
-        csd_psd_list = []
+        # Process each file and collect windowed signals for pyFRF averaging
+        all_windowed_u = []
+        all_windowed_x = []
+        all_windowed_y = []
+        all_windowed_tool = []
+        has_tool = False
         
         print(f"Processing {len(filepaths)} files for averaging...")
         for i, data in enumerate(all_data):
@@ -2884,6 +2655,7 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
             if measurement_case == 'case2_x':
                 tool_signal = signals.get('x_tool', None)
                 if tool_signal is not None:
+                    has_tool = True
                     window_tool, _ = create_signal_based_window(
                         tool_signal,
                         time,
@@ -2894,6 +2666,7 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
             elif measurement_case == 'case2_y':
                 tool_signal = signals.get('y_tool', None)
                 if tool_signal is not None:
+                    has_tool = True
                     window_tool, _ = create_signal_based_window(
                         tool_signal,
                         time,
@@ -2909,25 +2682,234 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
                 'y': signals['y'] * window_y
             }
             
-            # Calculate CSD/PSD terms for this file
-            csd_psd = calculate_csd_psd_terms(time, windowed_signals['u'], windowed_signals['x'], 
-                                              windowed_signals['y'], dt, params, tool_signal=tool_signal)
-            csd_psd_list.append(csd_psd)
+            # Collect windowed signals for pyFRF averaging
+            all_windowed_u.append(windowed_signals['u'])
+            all_windowed_x.append(windowed_signals['x'])
+            all_windowed_y.append(windowed_signals['y'])
+            if tool_signal is not None:
+                all_windowed_tool.append(tool_signal)
+            else:
+                all_windowed_tool.append(None)
             
             print(f"  Processed file {i+1}/{len(filepaths)}: {os.path.basename(data['filepath'])}")
         
-        # Average CSD/PSD terms across all files
-        print("Averaging CSD/PSD terms...")
-        averaged_csd_psd = average_csd_psd_terms(csd_psd_list)
+        # Create 3D arrays for pyFRF averaging: (n_measurements, n_dofs, n_samples)
+        n_files = len(all_windowed_u)
+        n_samples = len(all_windowed_u[0])
         
-        # Plot CSD/PSD terms from all files with averaged terms overlaid
-        if show_plot:
-            print("Plotting CSD/PSD terms from individual files with averaged terms...")
-            plot_csd_psd_before_averaging(csd_psd_list, filepaths, averaged_csd_psd=averaged_csd_psd, show_plot=show_plot)
+        # Reshape for pyFRF: (n_files, 1, n_samples)
+        exc_3d = np.array(all_windowed_u)[:, np.newaxis, :]  # (n_files, 1, n_samples)
+        resp_x_3d = np.array(all_windowed_x)[:, np.newaxis, :]  # (n_files, 1, n_samples)
+        resp_y_3d = np.array(all_windowed_y)[:, np.newaxis, :]  # (n_files, 1, n_samples)
         
-        # Calculate transfer functions and coherence from averaged terms
-        print("Calculating transfer functions from averaged CSD/PSD...")
-        fft_results = calculate_tf_from_averaged_csd_psd(averaged_csd_psd, params, dt)
+        # Extract Welch method parameters
+        nperseg = params.get('welch_nperseg', None)
+        noverlap = params.get('welch_noverlap', None)
+        window = params.get('welch_window', 'hann')
+        fs = 1 / min_dt
+        fs_int = int(round(fs))  # Convert to int for pyFRF
+        
+        # Create FRF instances with built-in averaging for x and y responses
+        print("Calculating FRF with pyFRF (averaging across files)...")
+        frf_x = FRF(
+            sampling_freq=fs_int,
+            exc=exc_3d,
+            resp=resp_x_3d,
+            exc_type='f',  # force
+            resp_type='a',  # acceleration
+            frf_type='H2',  # H₂ estimator
+            nperseg=nperseg,
+            noverlap=noverlap,
+            window=window
+        )
+        
+        frf_y = FRF(
+            sampling_freq=fs_int,
+            exc=exc_3d,
+            resp=resp_y_3d,
+            exc_type='f',  # force
+            resp_type='a',  # acceleration
+            frf_type='H2',  # H₂ estimator
+            nperseg=nperseg,
+            noverlap=noverlap,
+            window=window
+        )
+        
+        # Get frequency axis
+        frequencies = frf_x.get_f_axis()
+        
+        # Get acceleration transfer functions (accelerance: acceleration/force)
+        # get_FRF() returns shape (resp_dofs, exc_dofs, frequency_series) for 3D or (resp_dofs, frequency_series) for 2D
+        Gx_accel_full = frf_x.get_FRF(form='accelerance')
+        Gy_accel_full = frf_y.get_FRF(form='accelerance')
+        
+        # Get displacement transfer functions (receptance: displacement/force)
+        Gx_disp_full = frf_x.get_FRF(form='receptance')
+        Gy_disp_full = frf_y.get_FRF(form='receptance')
+        
+        # Extract 1D arrays for single input/output - acceleration
+        if Gx_accel_full.ndim == 3:
+            Gx_accel = Gx_accel_full[0, 0, :]  # Extract (frequency_series,)
+        elif Gx_accel_full.ndim == 2:
+            Gx_accel = Gx_accel_full[0, :]  # Extract (frequency_series,)
+        else:
+            Gx_accel = Gx_accel_full  # Already 1D
+        
+        if Gy_accel_full.ndim == 3:
+            Gy_accel = Gy_accel_full[0, 0, :]  # Extract (frequency_series,)
+        elif Gy_accel_full.ndim == 2:
+            Gy_accel = Gy_accel_full[0, :]  # Extract (frequency_series,)
+        else:
+            Gy_accel = Gy_accel_full  # Already 1D
+        
+        # Extract 1D arrays for single input/output - displacement
+        if Gx_disp_full.ndim == 3:
+            Gx = Gx_disp_full[0, 0, :]  # Extract (frequency_series,)
+        elif Gx_disp_full.ndim == 2:
+            Gx = Gx_disp_full[0, :]  # Extract (frequency_series,)
+        else:
+            Gx = Gx_disp_full  # Already 1D
+        
+        if Gy_disp_full.ndim == 3:
+            Gy = Gy_disp_full[0, 0, :]  # Extract (frequency_series,)
+        elif Gy_disp_full.ndim == 2:
+            Gy = Gy_disp_full[0, :]  # Extract (frequency_series,)
+        else:
+            Gy = Gy_disp_full  # Already 1D
+        
+        # Replace NaN values with 0 for displacement FRFs
+        Gx = np.nan_to_num(Gx, nan=0.0)
+        Gy = np.nan_to_num(Gy, nan=0.0)
+        
+        # Replace NaN values with 0 for acceleration FRFs
+        Gx_accel = np.nan_to_num(Gx_accel, nan=0.0)
+        Gy_accel = np.nan_to_num(Gy_accel, nan=0.0)
+        
+        # Get coherence (returns shape (resp_dofs, frequency_series) for 2D or 1D)
+        coherence_ux_full = frf_x.get_coherence()
+        coherence_uy_full = frf_y.get_coherence()
+        
+        if coherence_ux_full.ndim == 2:
+            coherence_ux = coherence_ux_full[0, :]  # Extract (frequency_series,)
+        else:
+            coherence_ux = coherence_ux_full  # Already 1D
+        
+        if coherence_uy_full.ndim == 2:
+            coherence_uy = coherence_uy_full[0, :]  # Extract (frequency_series,)
+        else:
+            coherence_uy = coherence_uy_full  # Already 1D
+        
+        # Process tool signal if present
+        if has_tool and any(t is not None for t in all_windowed_tool):
+            # Filter out None values and create 3D array
+            tool_signals = [t for t in all_windowed_tool if t is not None]
+            if len(tool_signals) == n_files:
+                resp_tool_3d = np.array(tool_signals)[:, np.newaxis, :]  # (n_files, 1, n_samples)
+                
+                frf_tool = FRF(
+                    sampling_freq=fs_int,
+                    exc=exc_3d,
+                    resp=resp_tool_3d,
+                    exc_type='f',  # force
+                    resp_type='a',  # acceleration
+                    frf_type='H2',  # H₂ estimator
+                    nperseg=nperseg,
+                    noverlap=noverlap,
+                    window=window
+                )
+                
+                frequencies_tool = frf_tool.get_f_axis()
+                G_tool_accel_full = frf_tool.get_FRF(form='accelerance')
+                G_tool_disp_full = frf_tool.get_FRF(form='receptance')
+                coherence_tool_full = frf_tool.get_coherence()
+                
+                # Extract 1D array for single input/output - acceleration
+                if G_tool_accel_full.ndim == 3:
+                    G_tool_accel = G_tool_accel_full[0, 0, :]  # Extract (frequency_series,)
+                elif G_tool_accel_full.ndim == 2:
+                    G_tool_accel = G_tool_accel_full[0, :]  # Extract (frequency_series,)
+                else:
+                    G_tool_accel = G_tool_accel_full  # Already 1D
+                
+                # Extract 1D array for single input/output - displacement
+                if G_tool_disp_full.ndim == 3:
+                    Tool = G_tool_disp_full[0, 0, :]  # Extract (frequency_series,)
+                elif G_tool_disp_full.ndim == 2:
+                    Tool = G_tool_disp_full[0, :]  # Extract (frequency_series,)
+                else:
+                    Tool = G_tool_disp_full  # Already 1D
+                
+                if coherence_tool_full.ndim == 2:
+                    coherence_tool = coherence_tool_full[0, :]  # Extract (frequency_series,)
+                else:
+                    coherence_tool = coherence_tool_full  # Already 1D
+                
+                # Replace NaN values with 0 for tool FRFs
+                Tool = np.nan_to_num(Tool, nan=0.0)
+                G_tool_accel = np.nan_to_num(G_tool_accel, nan=0.0)
+            else:
+                G_tool_accel = None
+                Tool = None
+                coherence_tool = None
+                frequencies_tool = None
+        else:
+            G_tool_accel = None
+            Tool = None
+            coherence_tool = None
+            frequencies_tool = None
+        
+        # Displacement and acceleration FRFs are now obtained directly from pyFRF
+        # No manual double integration needed
+        
+        # Get PSD of input force (Guu) for U calculation
+        # Use scipy.welch on averaged input signal
+        u_avg = np.mean(all_windowed_u, axis=0)
+        _, Guu = signal.welch(u_avg, fs=fs, nperseg=nperseg, noverlap=noverlap, 
+                             window=window, scaling='density', return_onesided=True)
+        
+        # Interpolate Guu to match frequencies if needed
+        if len(Guu) == len(frequencies):
+            Guu_aligned = Guu
+        else:
+            from scipy.interpolate import interp1d
+            freq_guu = np.fft.rfftfreq(n_samples, min_dt)[:len(Guu)]
+            valid_guu = np.isfinite(Guu) & (Guu > 0)
+            if np.any(valid_guu):
+                interp_func = interp1d(freq_guu[valid_guu], Guu[valid_guu], 
+                                     kind='linear', bounds_error=False, fill_value=np.nan)
+                Guu_aligned = interp_func(frequencies)
+            else:
+                Guu_aligned = np.full_like(frequencies, np.nan)
+        
+        # Create U array for compatibility with plot_force_psd
+        valid_mask_guu = np.isfinite(Guu_aligned) & (Guu_aligned > 0)
+        U_pos = np.zeros_like(frequencies, dtype=complex)
+        if np.any(valid_mask_guu):
+            U_magnitude = np.sqrt(Guu_aligned[valid_mask_guu] * n_samples * fs / 2)
+            U_pos[valid_mask_guu] = U_magnitude.astype(complex)
+        
+        # Create results dictionary with same structure as perform_pyfrf_analysis
+        fft_results = {
+            'frequencies': frequencies,
+            'U': U_pos,  # U from PSD
+            'X': Gx,  # Displacement transfer function
+            'Y': Gy,  # Displacement transfer function
+            'X_accel': Gx_accel,  # Acceleration transfer function
+            'Y_accel': Gy_accel,  # Acceleration transfer function
+            'X_full': None,  # Not used - skipping time signal reconstruction
+            'Y_full': None,  # Not used - skipping time signal reconstruction
+            'coherence_ux': coherence_ux,  # Coherence between input u and output x
+            'coherence_uy': coherence_uy,  # Coherence between input u and output y
+            'N': n_samples,
+            'dt': min_dt
+        }
+        
+        # Add tool results if available
+        if Tool is not None:
+            fft_results['Tool'] = Tool
+            fft_results['Tool_accel'] = G_tool_accel
+            fft_results['Tool_full'] = None  # Not used - skipping time signal reconstruction
+            fft_results['coherence_tool'] = coherence_tool  # Coherence between input u and tool output
         
         # Extract transfer function results
         tf_results = {
@@ -3016,7 +2998,8 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
         return result
         
     except Exception as e:
-        raise Exception(f"Error processing multiple files: {str(e)}")
+        import traceback
+        raise Exception(f"Error processing multiple files: {str(e)}") from e
 
 def process_measurement_file(filepath, measurement_case='case1', show_plot=True, save_files=True):
     """
@@ -3249,43 +3232,28 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
                                     windowed_signals['y'], show_plot, windows=windows_dict,
                                     tool_accel=tool_signal, tool_label=tool_label)
         
-        # Perform frequency domain analysis using either Welch CSD or FFT method
-        if params.get('use_welch_csd', True):
-            # Use Welch method with cross-spectral density
-            fft_results = perform_welch_csd_analysis(time, windowed_signals['u'], windowed_signals['x'], 
-                                                     windowed_signals['y'], dt, params, tool_signal=tool_signal)
-            
-            # For Welch method, transfer functions are already calculated in perform_welch_csd_analysis
-            # Extract them directly from results
-            tf_results = {
-                'Gx': fft_results['X'],  # Displacement transfer function
-                'Gy': fft_results['Y'],  # Displacement transfer function
-                'valid_mask': np.isfinite(fft_results['X']) & np.isfinite(fft_results['Y'])
-            }
-            if 'Tool' in fft_results:
-                tf_results['G_tool'] = fft_results['Tool']
-            
-            tf_accel_results = {
-                'Gx': fft_results['X_accel'],  # Acceleration transfer function
-                'Gy': fft_results['Y_accel'],  # Acceleration transfer function
-                'valid_mask': np.isfinite(fft_results['X_accel']) & np.isfinite(fft_results['Y_accel'])
-            }
-            if 'Tool_accel' in fft_results:
-                tf_accel_results['G_tool'] = fft_results['Tool_accel']
-        else:
-            # Use traditional FFT-based method
-            fft_results = perform_fft_analysis(time, windowed_signals['u'], windowed_signals['x'], 
-                                               windowed_signals['y'], dt, tool_signal=tool_signal)
-
-            # Calculate displacement transfer functions
-            Tool_freq = fft_results.get('Tool', None)
-            tf_results = calculate_transfer_functions(fft_results['X'], fft_results['Y'], 
-                                                      fft_results['U'], Tool=Tool_freq)
-            
-            # Calculate acceleration transfer functions
-            Tool_accel_freq = fft_results.get('Tool_accel', None)
-            tf_accel_results = calculate_transfer_functions(fft_results['X_accel'], fft_results['Y_accel'], 
-                                                           fft_results['U'], Tool=Tool_accel_freq)
+        # Perform frequency domain analysis using pyFRF
+        fft_results = perform_pyfrf_analysis(time, windowed_signals['u'], windowed_signals['x'], 
+                                             windowed_signals['y'], dt, params, tool_signal=tool_signal)
+        
+        # Transfer functions are already calculated in perform_pyfrf_analysis
+        # Extract them directly from results
+        tf_results = {
+            'Gx': fft_results['X'],  # Displacement transfer function
+            'Gy': fft_results['Y'],  # Displacement transfer function
+            'valid_mask': np.isfinite(fft_results['X']) & np.isfinite(fft_results['Y'])
+        }
+        if 'Tool' in fft_results:
+            tf_results['G_tool'] = fft_results['Tool']
+        
+        tf_accel_results = {
+            'Gx': fft_results['X_accel'],  # Acceleration transfer function
+            'Gy': fft_results['Y_accel'],  # Acceleration transfer function
+            'valid_mask': np.isfinite(fft_results['X_accel']) & np.isfinite(fft_results['Y_accel'])
+        }
+        if 'Tool_accel' in fft_results:
+            tf_accel_results['G_tool'] = fft_results['Tool_accel']
+        
 
         # Plot FFT magnitudes of x, y, and x_tool (if available, only if show_all_figures is True)
         if show_all_figures:
@@ -3298,8 +3266,8 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
             plot_force_psd(fft_results['frequencies'], fft_results['U'],
                            fft_results['dt'], fft_results['N'], show_plot)
         
-        # Plot coherence (always shown, only for Welch CSD method)
-        if params.get('use_welch_csd', True) and 'coherence_ux' in fft_results:
+        # Plot coherence (always shown)
+        if 'coherence_ux' in fft_results:
             coherence_ux = fft_results.get('coherence_ux', None)
             coherence_uy = fft_results.get('coherence_uy', None)
             coherence_tool = fft_results.get('coherence_tool', None)
@@ -3366,7 +3334,8 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
         return result
         
     except Exception as e:
-        raise Exception(f"Error processing file {filepath}: {str(e)}")
+        import traceback
+        raise Exception(f"Error processing file {filepath}: {str(e)}") from e
 
 # =============================================================================
 # USER INTERFACE
@@ -3570,8 +3539,13 @@ def main():
                     print(f"  - {file}")
         
     except Exception as e:
-        messagebox.showerror("Error", f"An error occurred: {str(e)}")
-        print(f"Error: {str(e)}")
+        import traceback
+        error_msg = f"An error occurred: {str(e)}"
+        traceback_str = traceback.format_exc()
+        messagebox.showerror("Error", error_msg)
+        print(f"Error: {error_msg}")
+        print("\nFull traceback:")
+        print(traceback_str)
     
     finally:
         root.destroy()
