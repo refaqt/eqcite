@@ -72,6 +72,7 @@ def get_system_parameters():
     
     # Window parameters for raised cosine (Tukey) windowing
     use_raised_cosine_window = False  # Toggle to enable/disable raised cosine window
+    window_type = 'exponential'  # Window type: 'raised-cosine', 'signal-based', or 'exponential'
     window_pre_seconds = 0.05   # Seconds before peak force to start window
     window_post_seconds = 0.1   # Seconds after peak force to end window
     window_beta = 0.25          # Tukey window roll-off (0 to 1)
@@ -80,11 +81,12 @@ def get_system_parameters():
     window_low_percent = 0.001  # Threshold percentage for low point (2% of max)
     window_sliding_size = 200  # Size of sliding window in samples for low_percent detection
     window_std_multiplier = 3.0  # Multiplier for standard deviation in low_percent condition
+    window_decay_db = 30.0  # Exponential window decay in dB
     
     # Welch method parameters for pyFRF (used for CSD-based transfer function estimation)
     welch_nperseg = 2500       # Length of each segment for Welch method (None = scipy default: 256 or signal length)
     welch_noverlap = 1250      # Number of points to overlap between segments (None = scipy default: nperseg // 2)
-    welch_window = 'hann'      # Window type for Welch method
+    welch_window = 'hamming'      # Window type for Welch method
     
     # FRF estimator type
     estimator_type = 'H2'      # FRF estimator type: 'H1', 'H2', 'Hv', or 'ODS'
@@ -103,6 +105,7 @@ def get_system_parameters():
         'wiener_filter': wiener_filter,
         'lowpass_bandwidth_hz': lowpass_bandwidth_hz,
         'use_raised_cosine_window': use_raised_cosine_window,
+        'window_type': window_type,
         'window_pre_seconds': window_pre_seconds,
         'window_post_seconds': window_post_seconds,
         'window_beta': window_beta,
@@ -111,6 +114,7 @@ def get_system_parameters():
         'window_low_percent': window_low_percent,
         'window_sliding_size': window_sliding_size,
         'window_std_multiplier': window_std_multiplier,
+        'window_decay_db': window_decay_db,
         'welch_nperseg': welch_nperseg,
         'welch_noverlap': welch_noverlap,
         'welch_window': welch_window,
@@ -899,6 +903,154 @@ def create_signal_based_window(sig, time, params, dt):
     }
     
     return window, metadata
+
+def create_exponential_window(sig, time, params, dt):
+    """
+    Build an exponential window centered on the signal peak.
+    
+    The window is calculated as:
+    w = exp(-abs(n - n_p) / tau)
+    where:
+    - n = sample index (0 to N-1)
+    - n_p = sample position of peak of the signal
+    - tau = N/2 * 8.69 / D
+    - D = decay in dB (window_decay_db parameter)
+    
+    Parameters
+    ----------
+    sig : array_like
+        Input signal array used to determine window timing
+    time : array_like
+        Time vector (seconds), assumed monotonically increasing
+    params : dict
+        System parameters dictionary containing window configuration
+    dt : float
+        Sample time in seconds (not used in exponential window, but kept for consistency)
+    
+    Returns
+    -------
+    np.ndarray
+        Window array matching the length of `time` with values in [0, 1]
+    dict
+        Metadata including peak time and peak index
+    """
+    sig = np.asarray(sig)
+    time = np.asarray(time)
+    
+    if time.shape != sig.shape:
+        raise ValueError("Time and signal must have the same shape for windowing")
+    
+    if time.ndim != 1:
+        raise ValueError("Time array must be one-dimensional")
+    
+    if len(time) < 1:
+        raise ValueError("Time array must contain at least one sample to create a window")
+    
+    # Extract parameters
+    decay_db = params.get('window_decay_db', 60.0)
+    
+    # Validate decay_db
+    if not np.isfinite(decay_db) or decay_db <= 0:
+        raise ValueError("window_decay_db must be a positive finite number")
+    
+    # Calculate absolute signal and find peak
+    abs_signal = np.abs(sig)
+    max_abs_signal = np.max(abs_signal)
+    
+    # Handle edge case: signal is all zeros or has no valid data
+    if max_abs_signal == 0 or not np.isfinite(max_abs_signal):
+        # Return all-ones window as fallback
+        window = np.ones_like(time, dtype=float)
+        peak_idx = len(time) // 2
+        return window, {
+            'peak_time': time[peak_idx] if len(time) > 0 else 0.0,
+            'start_time': time[0] if len(time) > 0 else 0.0,
+            'end_time': time[-1] if len(time) > 0 else 0.0,
+            'peak_index': peak_idx,
+            'start_index': 0,
+            'end_index': len(time)
+        }
+    
+    # Find peak index
+    peak_idx = int(np.argmax(abs_signal))
+    peak_time = time[peak_idx]
+    
+    # Calculate tau: tau = N/2 * 8.69 / D
+    N = len(time)
+    tau = (N / 2.0) * 8.69 / decay_db
+    
+    # Ensure tau is positive and finite
+    if not np.isfinite(tau) or tau <= 0:
+        # Fallback: use a reasonable default tau
+        tau = N / 10.0
+    
+    # Create sample indices: n = 0 to N-1
+    n = np.arange(N, dtype=float)
+    
+    # Calculate window: w = exp(-abs(n - n_p) / tau)
+    window = np.exp(-np.abs(n - peak_idx) / tau)
+    
+    # Ensure window values are in [0, 1] range (should already be, but clamp to be safe)
+    window = np.clip(window, 0.0, 1.0)
+    
+    # Metadata
+    metadata = {
+        'peak_time': peak_time,
+        'start_time': time[0],
+        'end_time': time[-1],
+        'peak_index': peak_idx,
+        'start_index': 0,
+        'end_index': len(time),
+        'tau': tau,
+        'decay_db': decay_db
+    }
+    
+    return window, metadata
+
+def create_window(sig, time, params, dt):
+    """
+    Create a window based on the selected window type.
+    
+    This function acts as a dispatcher that calls the appropriate window creation
+    function based on the window_type parameter in params.
+    
+    Parameters
+    ----------
+    sig : array_like
+        Input signal array used to determine window timing
+    time : array_like
+        Time vector (seconds), assumed monotonically increasing
+    params : dict
+        System parameters dictionary containing window configuration
+    dt : float
+        Sample time in seconds
+    
+    Returns
+    -------
+    np.ndarray
+        Window array matching the length of `time` with values in [0, 1]
+    dict
+        Metadata dictionary with window information
+    """
+    window_type = params.get('window_type', 'signal-based')
+    
+    if window_type == 'raised-cosine':
+        # Use raised cosine window
+        pre_seconds = params.get('window_pre_seconds', 0.05)
+        post_seconds = params.get('window_post_seconds', 0.1)
+        beta = params.get('window_beta', 0.25)
+        return create_raised_cosine_window(time, sig, pre_seconds, post_seconds, beta, dt)
+    
+    elif window_type == 'signal-based':
+        # Use signal-based window
+        return create_signal_based_window(sig, time, params, dt)
+    
+    elif window_type == 'exponential':
+        # Use exponential window
+        return create_exponential_window(sig, time, params, dt)
+    
+    else:
+        raise ValueError(f"Unknown window type: {window_type}. Must be 'raised-cosine', 'signal-based', or 'exponential'")
 
 # =============================================================================
 # FREQUENCY DOMAIN ANALYSIS
@@ -2632,7 +2784,7 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
             # Each signal gets its own window based on its own characteristics
             
             # Create window for u signal
-            window_u, _ = create_signal_based_window(
+            window_u, _ = create_window(
                 signals['u'],
                 time,
                 params,
@@ -2640,7 +2792,7 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
             )
             
             # Create window for x signal
-            window_x, _ = create_signal_based_window(
+            window_x, _ = create_window(
                 signals['x'],
                 time,
                 params,
@@ -2648,7 +2800,7 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
             )
             
             # Create window for y signal
-            window_y, _ = create_signal_based_window(
+            window_y, _ = create_window(
                 signals['y'],
                 time,
                 params,
@@ -2661,7 +2813,7 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
                 tool_signal = signals.get('x_tool', None)
                 if tool_signal is not None:
                     has_tool = True
-                    window_tool, _ = create_signal_based_window(
+                    window_tool, _ = create_window(
                         tool_signal,
                         time,
                         params,
@@ -2672,7 +2824,7 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
                 tool_signal = signals.get('y_tool', None)
                 if tool_signal is not None:
                     has_tool = True
-                    window_tool, _ = create_signal_based_window(
+                    window_tool, _ = create_window(
                         tool_signal,
                         time,
                         params,
@@ -3163,7 +3315,7 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
         # Each signal gets its own window based on its own characteristics
         
         # Create window for u signal
-        window_u, window_metadata_u = create_signal_based_window(
+        window_u, window_metadata_u = create_window(
             signals['u'],
             time,
             params,
@@ -3171,7 +3323,7 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
         )
         
         # Create window for x signal
-        window_x, window_metadata_x = create_signal_based_window(
+        window_x, window_metadata_x = create_window(
             signals['x'],
             time,
             params,
@@ -3179,7 +3331,7 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
         )
         
         # Create window for y signal
-        window_y, window_metadata_y = create_signal_based_window(
+        window_y, window_metadata_y = create_window(
             signals['y'],
             time,
             params,
@@ -3195,7 +3347,7 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
             tool_signal = signals.get('x_tool', None)
             if tool_signal is not None:
                 tool_label = 'x_tool'
-                window_tool, window_metadata_tool = create_signal_based_window(
+                window_tool, window_metadata_tool = create_window(
                     tool_signal,
                     time,
                     params,
@@ -3205,7 +3357,7 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
             tool_signal = signals.get('y_tool', None)
             if tool_signal is not None:
                 tool_label = 'y_tool'
-                window_tool, window_metadata_tool = create_signal_based_window(
+                window_tool, window_metadata_tool = create_window(
                     tool_signal,
                     time,
                     params,
