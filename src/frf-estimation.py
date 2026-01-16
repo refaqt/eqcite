@@ -77,13 +77,13 @@ def get_system_parameters():
     window_beta = 0.25          # Tukey window roll-off (0 to 1)
     window_rolloff_seconds = 0.005  # Rolloff duration and peak offset timing for signal-based windows (seconds)
     window_trigger_percent = 0.1  # Threshold percentage for trigger point (10% of max)
-    window_low_percent = 0.005  # Threshold percentage for low point (2% of max)
-    window_sliding_size = 100  # Size of sliding window in samples for low_percent detection
+    window_low_percent = 0.001  # Threshold percentage for low point (2% of max)
+    window_sliding_size = 200  # Size of sliding window in samples for low_percent detection
     window_std_multiplier = 3.0  # Multiplier for standard deviation in low_percent condition
     
     # Welch method parameters for pyFRF (used for CSD-based transfer function estimation)
     welch_nperseg = 2500       # Length of each segment for Welch method (None = scipy default: 256 or signal length)
-    welch_noverlap = 2000      # Number of points to overlap between segments (None = scipy default: nperseg // 2)
+    welch_noverlap = 1250      # Number of points to overlap between segments (None = scipy default: nperseg // 2)
     welch_window = 'hann'      # Window type for Welch method
     
     # FRF estimator type
@@ -766,14 +766,14 @@ def create_signal_based_window(sig, time, params, dt):
                 threshold_low_percent = current_threshold_percent * max_abs_signal
                 # Use the smaller window
                 window_data = abs_signal[-actual_window_size:]
-                std = np.std(window_data)
-                if std_multiplier * std > threshold_low_percent:
+                sigma = np.std(window_data)
+                if std_multiplier * sigma > threshold_low_percent:
                     last_low_percent_idx = len(time) - actual_window_size
                     found_window = True
                     break
                 else:
                     # Increase threshold by 0.01 for next iteration
-                    current_threshold_percent += 0.005
+                    current_threshold_percent += 0.001
             
             if not found_window:
                 # Fallback: use last sample
@@ -791,7 +791,7 @@ def create_signal_based_window(sig, time, params, dt):
                     last_valid_window_start = i
             
             if (last_valid_window_start is not None) & (last_valid_window_start != len(abs_signal) - window_sliding_size) \
-                        & (last_valid_window_start < int((window_sliding_size + len(abs_signal))/5)):
+                        & (last_valid_window_start < int((window_sliding_size + len(abs_signal))/2)):
                 last_low_percent_idx = last_valid_window_start
                 found_window = True
                 break
