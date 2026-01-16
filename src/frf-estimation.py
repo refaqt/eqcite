@@ -2104,9 +2104,10 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
 
 def plot_real_transfer_functions(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_plot=True, G_tool=None, G_tool_accel=None, tool_label=None):
     """
-    Generate plots of the real part of transfer functions Gx, Gy, and Gtool on linear scale.
+    Generate plots of the real and imaginary parts of transfer functions Gx, Gy, and Gtool on linear scale.
     Creates a 2-column layout: accelerations in the left column, displacements in the right column.
     Has 2 or 3 rows depending on whether G_tool is provided.
+    Both real (solid) and imaginary (dashed) parts are plotted on each subplot.
     
     Parameters:
     -----------
@@ -2132,43 +2133,57 @@ def plot_real_transfer_functions(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=No
     Gx_real = np.real(Gx)
     Gy_real = np.real(Gy)
     
+    # Extract imaginary parts for displacement
+    Gx_imag = np.imag(Gx)
+    Gy_imag = np.imag(Gy)
+    
     # Extract real parts for acceleration if provided
     if Gx_accel is not None and Gy_accel is not None:
         Gx_accel_real = np.real(Gx_accel)
         Gy_accel_real = np.real(Gy_accel)
+        Gx_accel_imag = np.imag(Gx_accel)
+        Gy_accel_imag = np.imag(Gy_accel)
     
     # Extract real parts for tool if provided
     if G_tool is not None:
         G_tool_real = np.real(G_tool)
+        G_tool_imag = np.imag(G_tool)
     
     # Extract real parts for tool acceleration if provided
     if G_tool_accel is not None:
         G_tool_accel_real = np.real(G_tool_accel)
+        G_tool_accel_imag = np.imag(G_tool_accel)
     
     # Remove NaN values for plotting (displacement)
-    valid_mask = np.isfinite(Gx_real) & np.isfinite(Gy_real)
+    valid_mask = np.isfinite(Gx_real) & np.isfinite(Gy_real) & np.isfinite(Gx_imag) & np.isfinite(Gy_imag)
     valid_freq = frequencies[valid_mask]
     valid_Gx_real = Gx_real[valid_mask]
     valid_Gy_real = Gy_real[valid_mask]
+    valid_Gx_imag = Gx_imag[valid_mask]
+    valid_Gy_imag = Gy_imag[valid_mask]
     
     # Process acceleration data if provided
     if Gx_accel is not None and Gy_accel is not None:
-        valid_mask_accel = np.isfinite(Gx_accel_real) & np.isfinite(Gy_accel_real)
+        valid_mask_accel = np.isfinite(Gx_accel_real) & np.isfinite(Gy_accel_real) & np.isfinite(Gx_accel_imag) & np.isfinite(Gy_accel_imag)
         valid_freq_accel = frequencies[valid_mask_accel]
         valid_Gx_accel_real = Gx_accel_real[valid_mask_accel]
         valid_Gy_accel_real = Gy_accel_real[valid_mask_accel]
+        valid_Gx_accel_imag = Gx_accel_imag[valid_mask_accel]
+        valid_Gy_accel_imag = Gy_accel_imag[valid_mask_accel]
     
     # Process tool data if provided
     if G_tool is not None:
-        valid_mask_tool = np.isfinite(G_tool_real)
+        valid_mask_tool = np.isfinite(G_tool_real) & np.isfinite(G_tool_imag)
         valid_freq_tool = frequencies[valid_mask_tool]
         valid_G_tool_real = G_tool_real[valid_mask_tool]
+        valid_G_tool_imag = G_tool_imag[valid_mask_tool]
     
     # Process tool acceleration data if provided
     if G_tool_accel is not None:
-        valid_mask_tool_accel = np.isfinite(G_tool_accel_real)
+        valid_mask_tool_accel = np.isfinite(G_tool_accel_real) & np.isfinite(G_tool_accel_imag)
         valid_freq_tool_accel = frequencies[valid_mask_tool_accel]
         valid_G_tool_accel_real = G_tool_accel_real[valid_mask_tool_accel]
+        valid_G_tool_accel_imag = G_tool_accel_imag[valid_mask_tool_accel]
     
     # Determine number of rows: 3 if G_tool is provided, otherwise 2
     n_rows = 3 if G_tool is not None else 2
@@ -2180,33 +2195,37 @@ def plot_real_transfer_functions(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=No
     
     # Plot Gx acceleration (first row, left column)
     if Gx_accel is not None and Gy_accel is not None:
-        axes[0, 0].plot(valid_freq_accel, valid_Gx_accel_real, 'b-', linewidth=2, label='Gx (Acceleration)')
-    axes[0, 0].set_ylabel('real(Gx)')
-    axes[0, 0].set_title('Real Part of Gx Transfer Function - Acceleration')
+        axes[0, 0].plot(valid_freq_accel, valid_Gx_accel_real, 'b-', linewidth=2, label='Gx Real (Acceleration)')
+        axes[0, 0].plot(valid_freq_accel, valid_Gx_accel_imag, 'b--', linewidth=2, label='Gx Imag (Acceleration)')
+    axes[0, 0].set_ylabel('real/imag(Gx)')
+    axes[0, 0].set_title('Real and Imaginary Parts of Gx Transfer Function - Acceleration')
     axes[0, 0].grid(True, alpha=0.3)
     if Gx_accel is not None and Gy_accel is not None:
         axes[0, 0].legend()
     
     # Plot Gx displacement (first row, right column)
-    axes[0, 1].plot(valid_freq, valid_Gx_real, 'b-', linewidth=2, label='Gx (Displacement)')
-    axes[0, 1].set_ylabel('real(Gx)')
-    axes[0, 1].set_title('Real Part of Gx Transfer Function - Displacement')
+    axes[0, 1].plot(valid_freq, valid_Gx_real, 'b-', linewidth=2, label='Gx Real (Displacement)')
+    axes[0, 1].plot(valid_freq, valid_Gx_imag, 'b--', linewidth=2, label='Gx Imag (Displacement)')
+    axes[0, 1].set_ylabel('real/imag(Gx)')
+    axes[0, 1].set_title('Real and Imaginary Parts of Gx Transfer Function - Displacement')
     axes[0, 1].grid(True, alpha=0.3)
     axes[0, 1].legend()
     
     # Plot Gy acceleration (second row, left column)
     if Gx_accel is not None and Gy_accel is not None:
-        axes[1, 0].plot(valid_freq_accel, valid_Gy_accel_real, 'r-', linewidth=2, label='Gy (Acceleration)')
-    axes[1, 0].set_ylabel('real(Gy)')
-    axes[1, 0].set_title('Real Part of Gy Transfer Function - Acceleration')
+        axes[1, 0].plot(valid_freq_accel, valid_Gy_accel_real, 'r-', linewidth=2, label='Gy Real (Acceleration)')
+        axes[1, 0].plot(valid_freq_accel, valid_Gy_accel_imag, 'r--', linewidth=2, label='Gy Imag (Acceleration)')
+    axes[1, 0].set_ylabel('real/imag(Gy)')
+    axes[1, 0].set_title('Real and Imaginary Parts of Gy Transfer Function - Acceleration')
     axes[1, 0].grid(True, alpha=0.3)
     if Gx_accel is not None and Gy_accel is not None:
         axes[1, 0].legend()
     
     # Plot Gy displacement (second row, right column)
-    axes[1, 1].plot(valid_freq, valid_Gy_real, 'r-', linewidth=2, label='Gy (Displacement)')
-    axes[1, 1].set_ylabel('real(Gy)')
-    axes[1, 1].set_title('Real Part of Gy Transfer Function - Displacement')
+    axes[1, 1].plot(valid_freq, valid_Gy_real, 'r-', linewidth=2, label='Gy Real (Displacement)')
+    axes[1, 1].plot(valid_freq, valid_Gy_imag, 'r--', linewidth=2, label='Gy Imag (Displacement)')
+    axes[1, 1].set_ylabel('real/imag(Gy)')
+    axes[1, 1].set_title('Real and Imaginary Parts of Gy Transfer Function - Displacement')
     axes[1, 1].grid(True, alpha=0.3)
     axes[1, 1].legend()
     
@@ -2217,19 +2236,21 @@ def plot_real_transfer_functions(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=No
         
         # Plot Gtool acceleration (third row, left column)
         if G_tool_accel is not None:
-            axes[2, 0].plot(valid_freq_tool_accel, valid_G_tool_accel_real, 'm-', linewidth=2, label=f'{tool_label_display} (Acceleration)')
-        axes[2, 0].set_ylabel(f'real({tool_label_display})')
+            axes[2, 0].plot(valid_freq_tool_accel, valid_G_tool_accel_real, 'm-', linewidth=2, label=f'{tool_label_display} Real (Acceleration)')
+            axes[2, 0].plot(valid_freq_tool_accel, valid_G_tool_accel_imag, 'm--', linewidth=2, label=f'{tool_label_display} Imag (Acceleration)')
+        axes[2, 0].set_ylabel(f'real/imag({tool_label_display})')
         axes[2, 0].set_xlabel('Frequency (Hz)')
-        axes[2, 0].set_title(f'Real Part of {title_label} Transfer Function - Acceleration')
+        axes[2, 0].set_title(f'Real and Imaginary Parts of {title_label} Transfer Function - Acceleration')
         axes[2, 0].grid(True, alpha=0.3)
         if G_tool_accel is not None:
             axes[2, 0].legend()
         
         # Plot Gtool displacement (third row, right column)
-        axes[2, 1].plot(valid_freq_tool, valid_G_tool_real, 'm-', linewidth=2, label=f'{tool_label_display} (Displacement)')
-        axes[2, 1].set_ylabel(f'real({tool_label_display})')
+        axes[2, 1].plot(valid_freq_tool, valid_G_tool_real, 'm-', linewidth=2, label=f'{tool_label_display} Real (Displacement)')
+        axes[2, 1].plot(valid_freq_tool, valid_G_tool_imag, 'm--', linewidth=2, label=f'{tool_label_display} Imag (Displacement)')
+        axes[2, 1].set_ylabel(f'real/imag({tool_label_display})')
         axes[2, 1].set_xlabel('Frequency (Hz)')
-        axes[2, 1].set_title(f'Real Part of {title_label} Transfer Function - Displacement')
+        axes[2, 1].set_title(f'Real and Imaginary Parts of {title_label} Transfer Function - Displacement')
         axes[2, 1].grid(True, alpha=0.3)
         axes[2, 1].legend()
     else:
