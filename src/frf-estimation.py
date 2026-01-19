@@ -70,6 +70,7 @@ def get_system_parameters():
     savgol_polyorder = 2  # Polynomial order for Savitzky-Golay filter
     
     # Low-pass filter parameters (for analysis visualization only)
+    lowpass_filter = True  # Toggle to enable/disable low-pass filter for channels A0-A7
     lowpass_bandwidth_hz = 100.0  # Low-pass filter bandwidth (Hz) for analysis plots
     
     # Window type parameters
@@ -116,6 +117,7 @@ def get_system_parameters():
         'savgol_filter': savgol_filter,
         'savgol_window_length': savgol_window_length,
         'savgol_polyorder': savgol_polyorder,
+        'lowpass_filter': lowpass_filter,
         'lowpass_bandwidth_hz': lowpass_bandwidth_hz,
         'input_window_type': input_window_type,
         'output_window_type': output_window_type,
@@ -2026,7 +2028,7 @@ def plot_savgol_filtered_signals(time, raw_signals, savgol_filtered_signals, win
     for idx, name in enumerate(signal_names):
         ax = axes[idx]
         
-        ax.plot(time, raw_signals[name], 'r-', linewidth=1, alpha=0.7, label='Raw (after Wiener/HP filter)')
+        ax.plot(time, raw_signals[name], 'r-', linewidth=1, alpha=0.7, label='Raw (after Wiener filter)')
         ax.plot(time, savgol_filtered_signals[name], 'b-', linewidth=1, alpha=0.7, 
                 label=f'Savitzky-Golay (w={window_length}, p={polyorder})')
         
@@ -3633,13 +3635,15 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
             A5 = apply_wiener_filter(A5, noise_A5, actual_window_A5)
             A6 = apply_wiener_filter(A6, noise_A6, actual_window_A6)
             A7 = apply_wiener_filter(A7, noise_A7, actual_window_A7)
-        
-        # Store filtered signals (after Wiener filter, before Savitzky-Golay) for comparison plots
-        filtered_signals = {
-            'A0': A0, 'A1': A1, 'A2': A2, 'A3': A3,
-            'A4': A4, 'A5': A5, 'A6': A6, 'A7': A7
-        }
-        
+
+        # Store Wiener filtered signals separately for plotting (if Wiener was applied)
+        wiener_filtered_signals = None
+        if use_wiener:
+            wiener_filtered_signals = {
+                'A0': A0, 'A1': A1, 'A2': A2, 'A3': A3,
+                'A4': A4, 'A5': A5, 'A6': A6, 'A7': A7
+            }
+
         # Store signals before Savitzky-Golay filter (these are the "raw" signals for comparison)
         raw_signals_before_savgol = {
             'A0': A0.copy(), 'A1': A1.copy(), 'A2': A2.copy(), 'A3': A3.copy(),
@@ -3668,38 +3672,41 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
             }
         else:
             savgol_filtered_signals = None
-        
-        # Store Wiener filtered signals separately for plotting (if Wiener was applied)
-        wiener_filtered_signals = None
-        if use_wiener:
-            wiener_filtered_signals = {
-                'A0': A0, 'A1': A1, 'A2': A2, 'A3': A3,
-                'A4': A4, 'A5': A5, 'A6': A6, 'A7': A7
-            }
+
+        # Store filtered signals (after all filters) for comparison plots
+        filtered_signals = {
+            'A0': A0, 'A1': A1, 'A2': A2, 'A3': A3,
+            'A4': A4, 'A5': A5, 'A6': A6, 'A7': A7
+        }
         
         # Show signal comparison plots (only if show_all_figures is True)
         if show_all_figures:
             plot_signal_comparison(time, original_signals, corrected_signals, filtered_signals, show_plot)
         
         # Apply low-pass filter to bias-corrected signals for analysis visualization
-        lowpass_bandwidth_hz = params['lowpass_bandwidth_hz']
-        A0_lowpass = apply_lowpass_filter(corrected_signals['A0'], lowpass_bandwidth_hz, fs)
-        A1_lowpass = apply_lowpass_filter(corrected_signals['A1'], lowpass_bandwidth_hz, fs)
-        A2_lowpass = apply_lowpass_filter(corrected_signals['A2'], lowpass_bandwidth_hz, fs)
-        A3_lowpass = apply_lowpass_filter(corrected_signals['A3'], lowpass_bandwidth_hz, fs)
-        A4_lowpass = apply_lowpass_filter(corrected_signals['A4'], lowpass_bandwidth_hz, fs)
-        A5_lowpass = apply_lowpass_filter(corrected_signals['A5'], lowpass_bandwidth_hz, fs)
-        A6_lowpass = apply_lowpass_filter(corrected_signals['A6'], lowpass_bandwidth_hz, fs)
-        A7_lowpass = apply_lowpass_filter(corrected_signals['A7'], lowpass_bandwidth_hz, fs)
+        use_lowpass = params.get('lowpass_filter', True)
+        if use_lowpass:
+            lowpass_bandwidth_hz = params['lowpass_bandwidth_hz']
+            A0_lowpass = apply_lowpass_filter(corrected_signals['A0'], lowpass_bandwidth_hz, fs)
+            A1_lowpass = apply_lowpass_filter(corrected_signals['A1'], lowpass_bandwidth_hz, fs)
+            A2_lowpass = apply_lowpass_filter(corrected_signals['A2'], lowpass_bandwidth_hz, fs)
+            A3_lowpass = apply_lowpass_filter(corrected_signals['A3'], lowpass_bandwidth_hz, fs)
+            A4_lowpass = apply_lowpass_filter(corrected_signals['A4'], lowpass_bandwidth_hz, fs)
+            A5_lowpass = apply_lowpass_filter(corrected_signals['A5'], lowpass_bandwidth_hz, fs)
+            A6_lowpass = apply_lowpass_filter(corrected_signals['A6'], lowpass_bandwidth_hz, fs)
+            A7_lowpass = apply_lowpass_filter(corrected_signals['A7'], lowpass_bandwidth_hz, fs)
+            
+            # Store low-pass filtered signals for plotting
+            lowpass_filtered_signals = {
+                'A0': A0_lowpass, 'A1': A1_lowpass, 'A2': A2_lowpass, 'A3': A3_lowpass,
+                'A4': A4_lowpass, 'A5': A5_lowpass, 'A6': A6_lowpass, 'A7': A7_lowpass
+            }
+        else:
+            lowpass_filtered_signals = None
         
-        # Store low-pass filtered signals for plotting
-        lowpass_filtered_signals = {
-            'A0': A0_lowpass, 'A1': A1_lowpass, 'A2': A2_lowpass, 'A3': A3_lowpass,
-            'A4': A4_lowpass, 'A5': A5_lowpass, 'A6': A6_lowpass, 'A7': A7_lowpass
-        }
-        
-        # Show low-pass filtered signals plot (only if show_all_figures is True)
-        if show_all_figures:
+        # Show low-pass filtered signals plot (only if show_all_figures is True and lowpass_filter is enabled)
+        if show_all_figures and use_lowpass:
+            lowpass_bandwidth_hz = params['lowpass_bandwidth_hz']
             plot_lowpass_filtered_signals(time, corrected_signals, lowpass_filtered_signals, 
                                          lowpass_bandwidth_hz, show_plot)
         
