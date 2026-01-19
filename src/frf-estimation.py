@@ -61,35 +61,46 @@ def get_system_parameters():
     # Bias removal parameters
     bias_window_size = 1000  # Number of samples for bias estimation window
     
-    # High-pass filter parameters
-    highpass_cutoff_hz = 0.0001  # High-pass filter cutoff frequency (Hz)
-    
     # Wiener filter parameters
-    wiener_filter = False  # Toggle to enable/disable Wiener filter for channels A0-A5
+    wiener_filter = True  # Toggle to enable/disable Wiener filter for channels A0-A7
+    
+    # Savitzky-Golay filter parameters
+    savgol_filter = True  # Toggle to enable/disable Savitzky-Golay filter for channels A0-A7
+    savgol_window_length = 10  # Window length for Savitzky-Golay filter (must be odd)
+    savgol_polyorder = 2  # Polynomial order for Savitzky-Golay filter
     
     # Low-pass filter parameters (for analysis visualization only)
     lowpass_bandwidth_hz = 100.0  # Low-pass filter bandwidth (Hz) for analysis plots
     
+    # Window type parameters
+    input_window_type = 'hann'  # Window type for input (force) signal: 'hann', 'exponential', 'raised-cosine', 'signal-based', or 'constant'
+    output_window_type = 'exponential'  # Window type for output (acceleration) signals: 'hann', 'exponential', 'raised-cosine', 'signal-based', or 'constant'
+
+    # Window parameter for Hann window
+    window_hann_width = 0.05  # Hann window width in seconds
+
     # Window parameters for raised cosine (Tukey) windowing
-    use_raised_cosine_window = False  # Toggle to enable/disable raised cosine window
-    window_type = 'exponential'  # Window type: 'raised-cosine', 'signal-based', or 'exponential'
     window_pre_seconds = 0.05   # Seconds before peak force to start window
     window_post_seconds = 0.1   # Seconds after peak force to end window
     window_beta = 0.25          # Tukey window roll-off (0 to 1)
     window_rolloff_seconds = 0.005  # Rolloff duration and peak offset timing for signal-based windows (seconds)
+
+    # Window parameters for signal-based raised cosine (Tukey) windowing
     window_trigger_percent = 0.1  # Threshold percentage for trigger point (10% of max)
     window_low_percent = 0.001  # Threshold percentage for low point (2% of max)
     window_sliding_size = 200  # Size of sliding window in samples for low_percent detection
     window_std_multiplier = 3.0  # Multiplier for standard deviation in low_percent condition
-    window_decay_db = 30.0  # Exponential window decay in dB
+
+    # Window parameters for exponential window
+    window_decay_db = 40.0  # Exponential window decay in dB
     
     # Welch method parameters for pyFRF (used for CSD-based transfer function estimation)
     welch_nperseg = 2500       # Length of each segment for Welch method (None = scipy default: 256 or signal length)
-    welch_noverlap = 1250      # Number of points to overlap between segments (None = scipy default: nperseg // 2)
+    welch_noverlap = 2000      # Number of points to overlap between segments (None = scipy default: nperseg // 2)
     welch_window = 'hamming'      # Window type for Welch method
     
     # FRF estimator type
-    estimator_type = 'H2'      # FRF estimator type: 'H1', 'H2', 'Hv', or 'ODS'
+    estimator_type = 'Hv'      # FRF estimator type: 'H1', 'H2', 'Hv', or 'ODS'
 
     return {
         'L1': L1,
@@ -101,11 +112,14 @@ def get_system_parameters():
         'v_u': v_u,
         'r_u': r_u,
         'bias_window_size': bias_window_size,
-        'highpass_cutoff_hz': highpass_cutoff_hz,
         'wiener_filter': wiener_filter,
+        'savgol_filter': savgol_filter,
+        'savgol_window_length': savgol_window_length,
+        'savgol_polyorder': savgol_polyorder,
         'lowpass_bandwidth_hz': lowpass_bandwidth_hz,
-        'use_raised_cosine_window': use_raised_cosine_window,
-        'window_type': window_type,
+        'input_window_type': input_window_type,
+        'output_window_type': output_window_type,
+        'window_hann_width': window_hann_width,
         'window_pre_seconds': window_pre_seconds,
         'window_post_seconds': window_post_seconds,
         'window_beta': window_beta,
@@ -451,33 +465,6 @@ def apply_wiener_filter(data, noise_power, mysize):
     """
     return signal.wiener(data, mysize=mysize, noise=noise_power)
 
-def apply_highpass_filter(data, cutoff_hz, fs):
-    """
-    Apply 4th-order Bessel high-pass filter to the data.
-    
-    Parameters:
-    -----------
-    data : array_like
-        Input signal array
-    cutoff_hz : float
-        Cutoff frequency in Hz
-    fs : float
-        Sampling frequency in Hz
-        
-    Returns:
-    --------
-    array_like : High-pass filtered signal
-    """
-    # Design 4th-order Bessel high-pass filter
-    b, a = signal.bessel(N=4, Wn=cutoff_hz, btype='high', analog=False, fs=fs)
-    
-    # Apply zero-phase filtering using filtfilt
-    filtered_data = signal.filtfilt(b, a, data)
-    
-    # return filtered_data
-
-    return data # no high-pass filter
-
 def apply_lowpass_filter(data, cutoff_hz, fs):
     """
     Apply 4th-order Bessel low-pass filter to the data.
@@ -500,6 +487,50 @@ def apply_lowpass_filter(data, cutoff_hz, fs):
     
     # Apply zero-phase filtering using filtfilt
     filtered_data = signal.filtfilt(b, a, data)
+    
+    return filtered_data
+
+def apply_savgol_filter(data, window_length, polyorder):
+    """
+    Apply Savitzky-Golay filter to the data.
+    
+    Parameters:
+    -----------
+    data : array_like
+        Input signal array
+    window_length : int
+        Window length for Savitzky-Golay filter (must be odd)
+    polyorder : int
+        Polynomial order for Savitzky-Golay filter
+        
+    Returns:
+    --------
+    array_like : Savitzky-Golay filtered signal
+    """
+    data = np.asarray(data)
+    signal_length = len(data)
+    
+    # Handle case where signal is shorter than window_length
+    if signal_length < window_length:
+        print(f"Warning: Signal length ({signal_length}) is less than window length ({window_length}). "
+              f"Returning original signal.")
+        return data
+    
+    # Ensure window_length is odd (required by savgol_filter)
+    if window_length % 2 == 0:
+        window_length = window_length - 1
+        if window_length < 3:
+            print(f"Warning: Adjusted window length ({window_length}) is too small. "
+                  f"Returning original signal.")
+            return data
+    
+    # Ensure polyorder is less than window_length
+    if polyorder >= window_length:
+        polyorder = window_length - 1
+        print(f"Warning: Polynomial order adjusted to {polyorder} (window_length - 1)")
+    
+    # Apply Savitzky-Golay filter
+    filtered_data = signal.savgol_filter(data, window_length, polyorder)
     
     return filtered_data
 
@@ -1007,12 +1038,17 @@ def create_exponential_window(sig, time, params, dt):
     
     return window, metadata
 
-def create_window(sig, time, params, dt):
+def create_hann_window(sig, time, params, dt):
     """
-    Create a window based on the selected window type.
+    Build a Hann window centered on the signal peak.
     
-    This function acts as a dispatcher that calls the appropriate window creation
-    function based on the window_type parameter in params.
+    The window is calculated as:
+    w[n] = 0.5 + 0.5 * cos(2*π*(n - n_peak)/(M-1))
+    where:
+    - n = sample index (0 to N-1)
+    - n_peak = sample position of peak of the signal
+    - M = window width in samples = int(window_hann_width / dt)
+    - Window is zero outside the range [n_peak - M//2, n_peak + M//2]
     
     Parameters
     ----------
@@ -1030,9 +1066,176 @@ def create_window(sig, time, params, dt):
     np.ndarray
         Window array matching the length of `time` with values in [0, 1]
     dict
+        Metadata including peak time, peak index, and window start/end indices
+    """
+    sig = np.asarray(sig)
+    time = np.asarray(time)
+    
+    if time.shape != sig.shape:
+        raise ValueError("Time and signal must have the same shape for windowing")
+    
+    if time.ndim != 1:
+        raise ValueError("Time array must be one-dimensional")
+    
+    if len(time) < 1:
+        raise ValueError("Time array must contain at least one sample to create a window")
+    
+    # Extract parameters
+    window_hann_width = params.get('window_hann_width', 0.1)
+    
+    # Validate window_hann_width
+    if not np.isfinite(window_hann_width) or window_hann_width <= 0:
+        raise ValueError("window_hann_width must be a positive finite number")
+    
+    # Calculate absolute signal and find peak
+    abs_signal = np.abs(sig)
+    max_abs_signal = np.max(abs_signal)
+    
+    # Handle edge case: signal is all zeros or has no valid data
+    if max_abs_signal == 0 or not np.isfinite(max_abs_signal):
+        # Return all-ones window as fallback
+        window = np.ones_like(time, dtype=float)
+        peak_idx = len(time) // 2
+        return window, {
+            'peak_time': time[peak_idx] if len(time) > 0 else 0.0,
+            'start_time': time[0] if len(time) > 0 else 0.0,
+            'end_time': time[-1] if len(time) > 0 else 0.0,
+            'peak_index': peak_idx,
+            'start_index': 0,
+            'end_index': len(time),
+            'window_width_samples': len(time),
+            'window_width_seconds': time[-1] - time[0] if len(time) > 1 else 0.0
+        }
+    
+    # Find peak index
+    peak_idx = int(np.argmax(abs_signal))
+    peak_time = time[peak_idx]
+    
+    # Calculate window width in samples: M = int(window_hann_width / dt)
+    M = int(window_hann_width / dt)
+    
+    # Ensure M is at least 2 (need at least 2 samples for the formula)
+    if M < 2:
+        M = 2
+    
+    # Calculate window range: [n_peak - M//2, n_peak + M//2]
+    start_idx = peak_idx - M // 2
+    end_idx = peak_idx + M // 2 + 1  # +1 because end_idx is exclusive
+    
+    # Clamp to signal bounds
+    start_idx = max(0, start_idx)
+    end_idx = min(len(time), end_idx)
+    
+    # Ensure we have at least 2 samples
+    if end_idx <= start_idx + 1:
+        # Fallback: use a small window around the peak
+        start_idx = max(0, peak_idx - 1)
+        end_idx = min(len(time), peak_idx + 2)
+        if end_idx <= start_idx + 1:
+            end_idx = start_idx + 2
+        M = end_idx - start_idx
+    
+    # Create window array (all zeros initially)
+    window = np.zeros_like(time, dtype=float)
+    
+    # Create sample indices for the window region
+    n = np.arange(start_idx, end_idx, dtype=float)
+    
+    # Calculate Hann window: w = 0.5 + 0.5 * cos(2*pi*(n - n_peak)/(M-1))
+    # Note: M-1 in denominator ensures the window goes from 0 to 1 over M samples
+    window[start_idx:end_idx] = 0.5 + 0.5 * np.cos(2 * np.pi * (n - peak_idx) / (M - 1))
+    
+    # Ensure window values are in [0, 1] range (should already be, but clamp to be safe)
+    window = np.clip(window, 0.0, 1.0)
+    
+    # Metadata
+    metadata = {
+        'peak_time': peak_time,
+        'start_time': time[start_idx],
+        'end_time': time[end_idx - 1] if end_idx > start_idx else time[start_idx],
+        'peak_index': peak_idx,
+        'start_index': start_idx,
+        'end_index': end_idx,
+        'window_width_samples': M,
+        'window_width_seconds': window_hann_width
+    }
+    
+    return window, metadata
+
+def create_constant_window(sig, time, params, dt):
+    """
+    Build a constant window (all ones, no windowing applied).
+    
+    Parameters
+    ----------
+    sig : array_like
+        Input signal array (not used, but kept for consistency with other window functions)
+    time : array_like
+        Time vector (seconds), assumed monotonically increasing
+    params : dict
+        System parameters dictionary (not used, but kept for consistency)
+    dt : float
+        Sample time in seconds (not used, but kept for consistency)
+    
+    Returns
+    -------
+    np.ndarray
+        Window array matching the length of `time` with all values set to 1.0
+    dict
+        Metadata including start/end times
+    """
+    time = np.asarray(time)
+    
+    if time.ndim != 1:
+        raise ValueError("Time array must be one-dimensional")
+    
+    if len(time) < 1:
+        raise ValueError("Time array must contain at least one sample to create a window")
+    
+    # Create window array of all ones
+    window = np.ones_like(time, dtype=float)
+    
+    # Metadata
+    metadata = {
+        'start_time': time[0] if len(time) > 0 else 0.0,
+        'end_time': time[-1] if len(time) > 0 else 0.0,
+        'start_index': 0,
+        'end_index': len(time)
+    }
+    
+    return window, metadata
+
+def create_window(sig, time, params, dt, window_type=None):
+    """
+    Create a window based on the selected window type.
+    
+    This function acts as a dispatcher that calls the appropriate window creation
+    function based on the window_type parameter.
+    
+    Parameters
+    ----------
+    sig : array_like
+        Input signal array used to determine window timing
+    time : array_like
+        Time vector (seconds), assumed monotonically increasing
+    params : dict
+        System parameters dictionary containing window configuration
+    dt : float
+        Sample time in seconds
+    window_type : str, optional
+        Window type to use. If None, uses params.get('window_type', 'exponential') for backward compatibility.
+        Valid options: 'hann', 'exponential', 'raised-cosine', 'signal-based', 'constant'
+    
+    Returns
+    -------
+    np.ndarray
+        Window array matching the length of `time` with values in [0, 1]
+    dict
         Metadata dictionary with window information
     """
-    window_type = params.get('window_type', 'signal-based')
+    # If window_type is not provided, use legacy parameter for backward compatibility
+    if window_type is None:
+        window_type = params.get('window_type', 'exponential')
     
     if window_type == 'raised-cosine':
         # Use raised cosine window
@@ -1049,8 +1252,16 @@ def create_window(sig, time, params, dt):
         # Use exponential window
         return create_exponential_window(sig, time, params, dt)
     
+    elif window_type == 'hann':
+        # Use Hann window
+        return create_hann_window(sig, time, params, dt)
+    
+    elif window_type == 'constant':
+        # Use constant window (all ones)
+        return create_constant_window(sig, time, params, dt)
+    
     else:
-        raise ValueError(f"Unknown window type: {window_type}. Must be 'raised-cosine', 'signal-based', or 'exponential'")
+        raise ValueError(f"Unknown window type: {window_type}. Must be 'hann', 'exponential', 'raised-cosine', 'signal-based', or 'constant'")
 
 # =============================================================================
 # FREQUENCY DOMAIN ANALYSIS
@@ -1660,7 +1871,7 @@ def plot_csd_psd_before_averaging(csd_psd_list, filepaths, averaged_csd_psd=None
 
 def plot_signal_comparison(time, original_signals, corrected_signals, filtered_signals, show_plot=True):
     """
-    Plot comparison of original, bias-corrected, and high-pass filtered signals for A0-A7.
+    Plot comparison of original, bias-corrected, and filtered signals for A0-A7.
     Creates a single figure with 2 rows and 4 columns (8 subplots total).
     
     Parameters:
@@ -1672,7 +1883,7 @@ def plot_signal_comparison(time, original_signals, corrected_signals, filtered_s
     corrected_signals : dict
         Dictionary with keys 'A0' through 'A7' containing bias-corrected signals
     filtered_signals : dict
-        Dictionary with keys 'A0' through 'A7' containing high-pass filtered signals
+        Dictionary with keys 'A0' through 'A7' containing filtered signals
     show_plot : bool
         Whether to display the plots
     """
@@ -1690,7 +1901,7 @@ def plot_signal_comparison(time, original_signals, corrected_signals, filtered_s
         
         ax.plot(time, original_signals[name], 'b-', linewidth=1, alpha=0.7, label='Original')
         ax.plot(time, corrected_signals[name], 'r-', linewidth=1, alpha=0.7, label='Bias Corrected')
-        ax.plot(time, filtered_signals[name], 'g-', linewidth=1, alpha=0.7, label='High-pass Filtered')
+        ax.plot(time, filtered_signals[name], 'g-', linewidth=1, alpha=0.7, label='Filtered')
         
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Voltage (V)')
@@ -1745,27 +1956,27 @@ def plot_lowpass_filtered_signals(time, bias_corrected_signals, lowpass_filtered
 
 def plot_wiener_filtered_signals(time, bias_corrected_signals, wiener_filtered_signals, show_plot=True):
     """
-    Plot comparison of bias-corrected and Wiener filtered signals for A0-A5.
-    Creates a single figure with 2 rows and 3 columns (6 subplots total).
+    Plot comparison of bias-corrected and Wiener filtered signals for A0-A7.
+    Creates a single figure with 2 rows and 4 columns (8 subplots total).
     
     Parameters:
     -----------
     time : array_like
         Time array in seconds
     bias_corrected_signals : dict
-        Dictionary with keys 'A0' through 'A5' containing bias-corrected signals
+        Dictionary with keys 'A0' through 'A7' containing bias-corrected signals
     wiener_filtered_signals : dict
-        Dictionary with keys 'A0' through 'A5' containing Wiener filtered signals
+        Dictionary with keys 'A0' through 'A7' containing Wiener filtered signals
     show_plot : bool
         Whether to display the plots
     """
     if not show_plot:
         return
     
-    signal_names = ['A0', 'A1', 'A2', 'A3', 'A4', 'A5']
+    signal_names = ['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7']
     
-    # Create figure with 2 rows and 3 columns
-    fig, axes = plt.subplots(2, 3, figsize=(16, 8))
+    # Create figure with 2 rows and 4 columns
+    fig, axes = plt.subplots(2, 4, figsize=(16, 8))
     axes = axes.flatten()  # Flatten to 1D array for easy indexing
     
     for idx, name in enumerate(signal_names):
@@ -1777,6 +1988,51 @@ def plot_wiener_filtered_signals(time, bias_corrected_signals, wiener_filtered_s
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Voltage (V)')
         ax.set_title(f'Wiener Filtered Signal Comparison - {name}')
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8)
+    
+    plt.tight_layout()
+    plt.show()
+
+def plot_savgol_filtered_signals(time, raw_signals, savgol_filtered_signals, window_length, polyorder, show_plot=True):
+    """
+    Plot comparison of raw signals (after Wiener filter) and Savitzky-Golay filtered signals for A0-A7.
+    Creates a single figure with 2 rows and 4 columns (8 subplots total).
+    
+    Parameters:
+    -----------
+    time : array_like
+        Time array in seconds
+    raw_signals : dict
+        Dictionary with keys 'A0' through 'A7' containing signals after Wiener filter (before Savitzky-Golay)
+    savgol_filtered_signals : dict
+        Dictionary with keys 'A0' through 'A7' containing Savitzky-Golay filtered signals
+    window_length : int
+        Window length used for Savitzky-Golay filter (for display in labels)
+    polyorder : int
+        Polynomial order used for Savitzky-Golay filter (for display in labels)
+    show_plot : bool
+        Whether to display the plots
+    """
+    if not show_plot:
+        return
+    
+    signal_names = ['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7']
+    
+    # Create figure with 2 rows and 4 columns
+    fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+    axes = axes.flatten()  # Flatten to 1D array for easy indexing
+    
+    for idx, name in enumerate(signal_names):
+        ax = axes[idx]
+        
+        ax.plot(time, raw_signals[name], 'r-', linewidth=1, alpha=0.7, label='Raw (after Wiener/HP filter)')
+        ax.plot(time, savgol_filtered_signals[name], 'b-', linewidth=1, alpha=0.7, 
+                label=f'Savitzky-Golay (w={window_length}, p={polyorder})')
+        
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel('Voltage (V)')
+        ax.set_title(f'Savitzky-Golay Filtered Signal Comparison - {name}')
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8)
     
@@ -2195,8 +2451,8 @@ def plot_real_transfer_functions(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=No
     
     # Plot Gx acceleration (first row, left column)
     if Gx_accel is not None and Gy_accel is not None:
+        axes[0, 0].plot(valid_freq_accel, valid_Gx_accel_imag, 'k--', linewidth=2, label='Gx Imag (Acceleration)')
         axes[0, 0].plot(valid_freq_accel, valid_Gx_accel_real, 'b-', linewidth=2, label='Gx Real (Acceleration)')
-        axes[0, 0].plot(valid_freq_accel, valid_Gx_accel_imag, 'b--', linewidth=2, label='Gx Imag (Acceleration)')
     axes[0, 0].set_ylabel('real/imag(Gx)')
     axes[0, 0].set_title('Real and Imaginary Parts of Gx Transfer Function - Acceleration')
     axes[0, 0].grid(True, alpha=0.3)
@@ -2204,8 +2460,8 @@ def plot_real_transfer_functions(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=No
         axes[0, 0].legend()
     
     # Plot Gx displacement (first row, right column)
+    axes[0, 1].plot(valid_freq, valid_Gx_imag, 'k--', linewidth=2, label='Gx Imag (Displacement)')
     axes[0, 1].plot(valid_freq, valid_Gx_real, 'b-', linewidth=2, label='Gx Real (Displacement)')
-    axes[0, 1].plot(valid_freq, valid_Gx_imag, 'b--', linewidth=2, label='Gx Imag (Displacement)')
     axes[0, 1].set_ylabel('real/imag(Gx)')
     axes[0, 1].set_title('Real and Imaginary Parts of Gx Transfer Function - Displacement')
     axes[0, 1].grid(True, alpha=0.3)
@@ -2213,8 +2469,8 @@ def plot_real_transfer_functions(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=No
     
     # Plot Gy acceleration (second row, left column)
     if Gx_accel is not None and Gy_accel is not None:
+        axes[1, 0].plot(valid_freq_accel, valid_Gy_accel_imag, 'k--', linewidth=2, label='Gy Imag (Acceleration)')
         axes[1, 0].plot(valid_freq_accel, valid_Gy_accel_real, 'r-', linewidth=2, label='Gy Real (Acceleration)')
-        axes[1, 0].plot(valid_freq_accel, valid_Gy_accel_imag, 'r--', linewidth=2, label='Gy Imag (Acceleration)')
     axes[1, 0].set_ylabel('real/imag(Gy)')
     axes[1, 0].set_title('Real and Imaginary Parts of Gy Transfer Function - Acceleration')
     axes[1, 0].grid(True, alpha=0.3)
@@ -2222,8 +2478,8 @@ def plot_real_transfer_functions(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=No
         axes[1, 0].legend()
     
     # Plot Gy displacement (second row, right column)
+    axes[1, 1].plot(valid_freq, valid_Gy_imag, 'k--', linewidth=2, label='Gy Imag (Displacement)')
     axes[1, 1].plot(valid_freq, valid_Gy_real, 'r-', linewidth=2, label='Gy Real (Displacement)')
-    axes[1, 1].plot(valid_freq, valid_Gy_imag, 'r--', linewidth=2, label='Gy Imag (Displacement)')
     axes[1, 1].set_ylabel('real/imag(Gy)')
     axes[1, 1].set_title('Real and Imaginary Parts of Gy Transfer Function - Displacement')
     axes[1, 1].grid(True, alpha=0.3)
@@ -2236,8 +2492,9 @@ def plot_real_transfer_functions(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=No
         
         # Plot Gtool acceleration (third row, left column)
         if G_tool_accel is not None:
+            axes[2, 0].plot(valid_freq_tool_accel, valid_G_tool_accel_imag, 'k--', linewidth=2,
+                            label=f'{tool_label_display} Imag (Acceleration)')
             axes[2, 0].plot(valid_freq_tool_accel, valid_G_tool_accel_real, 'm-', linewidth=2, label=f'{tool_label_display} Real (Acceleration)')
-            axes[2, 0].plot(valid_freq_tool_accel, valid_G_tool_accel_imag, 'm--', linewidth=2, label=f'{tool_label_display} Imag (Acceleration)')
         axes[2, 0].set_ylabel(f'real/imag({tool_label_display})')
         axes[2, 0].set_xlabel('Frequency (Hz)')
         axes[2, 0].set_title(f'Real and Imaginary Parts of {title_label} Transfer Function - Acceleration')
@@ -2246,8 +2503,9 @@ def plot_real_transfer_functions(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=No
             axes[2, 0].legend()
         
         # Plot Gtool displacement (third row, right column)
+        axes[2, 1].plot(valid_freq_tool, valid_G_tool_imag, 'k--', linewidth=2,
+                        label=f'{tool_label_display} Imag (Displacement)')
         axes[2, 1].plot(valid_freq_tool, valid_G_tool_real, 'm-', linewidth=2, label=f'{tool_label_display} Real (Displacement)')
-        axes[2, 1].plot(valid_freq_tool, valid_G_tool_imag, 'm--', linewidth=2, label=f'{tool_label_display} Imag (Displacement)')
         axes[2, 1].set_ylabel(f'real/imag({tool_label_display})')
         axes[2, 1].set_xlabel('Frequency (Hz)')
         axes[2, 1].set_title(f'Real and Imaginary Parts of {title_label} Transfer Function - Displacement')
@@ -2583,14 +2841,14 @@ def plot_coherence(frequencies, coherence_ux, coherence_uy, show_plot=True, tool
 
 def generate_output_filename(original_filepath, suffix):
     """
-    Generate output filename based on input filename and suffix (Gx or Gy).
+    Generate output filename based on input filename and suffix (Gx, Gy, Gx_tool, or Gy_tool).
     
     Parameters:
     -----------
     original_filepath : str
         Path to original CSV file
     suffix : str
-        Suffix to replace direction indicator ('Gx' or 'Gy')
+        Suffix to replace direction indicator ('Gx', 'Gy', 'Gx_tool', or 'Gy_tool')
         
     Returns:
     --------
@@ -2600,6 +2858,7 @@ def generate_output_filename(original_filepath, suffix):
     
     # Replace direction indicator with suffix
     # Pattern: ..._x.csv or ..._y.csv (with optional suffix) -> ..._Gx.csv or ..._Gy.csv (preserving suffix)
+    # For tool files: ..._x.csv -> ..._Gx_tool.csv
     # Make pattern case-insensitive to handle both .csv and .CSV extensions
     pattern = r'(_[xy])(_[^.]*)?(\.csv)$'
     new_filename = re.sub(pattern, f'_{suffix}\\2\\3', filename, flags=re.IGNORECASE)
@@ -2609,20 +2868,30 @@ def generate_output_filename(original_filepath, suffix):
     
     return os.path.join(directory, new_filename)
 
-def save_results(frequencies, Gx, Gy, original_filepath, save_files=True):
+def save_results(frequencies, Gx, Gy, original_filepath, save_files=True, 
+                metadata=None, measurement_case='case1', Gx_accel=None, Gy_accel=None,
+                G_tool=None, G_tool_accel=None):
     """
-    Save frequency response data to CSV files.
+    Save frequency response data to CSV files with comprehensive Bode plot data.
     
     Parameters:
     -----------
     frequencies : array_like
         Frequency array in Hz
     Gx, Gy : array_like
-        Transfer functions (complex)
+        Displacement transfer functions (complex)
     original_filepath : str
         Path to original CSV file
     save_files : bool
         Whether to save files
+    metadata : dict, optional
+        Metadata from parse_filename, contains 'direction' field ('x' or 'y')
+    measurement_case : str, optional
+        Measurement case identifier ('case1', 'case2_x', 'case2_y')
+    Gx_accel, Gy_accel : array_like, optional
+        Acceleration transfer functions (complex)
+    G_tool, G_tool_accel : array_like, optional
+        Tool transfer functions (complex) - displacement and acceleration
         
     Returns:
     --------
@@ -2633,28 +2902,93 @@ def save_results(frequencies, Gx, Gy, original_filepath, save_files=True):
     
     saved_files = []
     
-    # Calculate magnitudes
-    Gx_mag = np.abs(Gx)
-    Gy_mag = np.abs(Gy)
+    # Determine direction from metadata if available, otherwise default to exporting both
+    direction = None
+    if metadata is not None and 'direction' in metadata:
+        direction = metadata['direction'].lower()
     
-    # Create DataFrame with all data
-    df = pd.DataFrame({
-        'Frequency_Hz': frequencies,
-        'Gx_m_per_N': Gx_mag,
-        'Gy_m_per_N': Gy_mag
-    })
+    # Helper function to create DataFrame for a transfer function
+    def create_transfer_function_df(freq, G_accel, G_disp, name):
+        """Create DataFrame with all transfer function data."""
+        # Calculate acceleration components
+        G_accel_real = np.real(G_accel) if G_accel is not None else np.zeros_like(freq)
+        G_accel_imag = np.imag(G_accel) if G_accel is not None else np.zeros_like(freq)
+        G_accel_amp = np.abs(G_accel) if G_accel is not None else np.zeros_like(freq)
+        G_accel_phase = np.angle(G_accel) if G_accel is not None else np.zeros_like(freq)
+        
+        # Calculate displacement components
+        G_disp_real = np.real(G_disp) if G_disp is not None else np.zeros_like(freq)
+        G_disp_imag = np.imag(G_disp) if G_disp is not None else np.zeros_like(freq)
+        G_disp_amp = np.abs(G_disp) if G_disp is not None else np.zeros_like(freq)
+        G_disp_phase = np.angle(G_disp) if G_disp is not None else np.zeros_like(freq)
+        
+        # Replace NaN/Inf with 0
+        G_accel_real = np.nan_to_num(G_accel_real, nan=0.0, posinf=0.0, neginf=0.0)
+        G_accel_imag = np.nan_to_num(G_accel_imag, nan=0.0, posinf=0.0, neginf=0.0)
+        G_accel_amp = np.nan_to_num(G_accel_amp, nan=0.0, posinf=0.0, neginf=0.0)
+        G_accel_phase = np.nan_to_num(G_accel_phase, nan=0.0, posinf=0.0, neginf=0.0)
+        G_disp_real = np.nan_to_num(G_disp_real, nan=0.0, posinf=0.0, neginf=0.0)
+        G_disp_imag = np.nan_to_num(G_disp_imag, nan=0.0, posinf=0.0, neginf=0.0)
+        G_disp_amp = np.nan_to_num(G_disp_amp, nan=0.0, posinf=0.0, neginf=0.0)
+        G_disp_phase = np.nan_to_num(G_disp_phase, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        df = pd.DataFrame({
+            'frequency': freq,
+            'G_real_acceleration': G_accel_real,
+            'G_imag_acceleration': G_accel_imag,
+            'G_amplitude_acceleration': G_accel_amp,
+            'G_phase_rad_acceleration': G_accel_phase,
+            'G_real_displacement': G_disp_real,
+            'G_imag_displacement': G_disp_imag,
+            'G_amplitude_displacement': G_disp_amp,
+            'G_phase_rad_displacement': G_disp_phase
+        })
+        return df
     
-    # Save Gx file
-    gx_filename = generate_output_filename(original_filepath, 'Gx')
-    df_gx = df[['Frequency_Hz', 'Gx_m_per_N']].copy()
-    df_gx.to_csv(gx_filename, index=False, float_format='%.6e')
-    saved_files.append(gx_filename)
+    # Export based on direction from filename
+    if direction == 'x':
+        # Export Gx file
+        if Gx_accel is not None and Gx is not None:
+            df_gx = create_transfer_function_df(frequencies, Gx_accel, Gx, 'Gx')
+            gx_filename = generate_output_filename(original_filepath, 'Gx')
+            df_gx.to_csv(gx_filename, index=False, float_format='%.6e')
+            saved_files.append(gx_filename)
+        
+        # Export Gx_tool if available
+        if measurement_case == 'case2_x' and G_tool_accel is not None and G_tool is not None:
+            df_gx_tool = create_transfer_function_df(frequencies, G_tool_accel, G_tool, 'Gx_tool')
+            gx_tool_filename = generate_output_filename(original_filepath, 'Gx_tool')
+            df_gx_tool.to_csv(gx_tool_filename, index=False, float_format='%.6e')
+            saved_files.append(gx_tool_filename)
     
-    # Save Gy file
-    gy_filename = generate_output_filename(original_filepath, 'Gy')
-    df_gy = df[['Frequency_Hz', 'Gy_m_per_N']].copy()
-    df_gy.to_csv(gy_filename, index=False, float_format='%.6e')
-    saved_files.append(gy_filename)
+    elif direction == 'y':
+        # Export Gy file
+        if Gy_accel is not None and Gy is not None:
+            df_gy = create_transfer_function_df(frequencies, Gy_accel, Gy, 'Gy')
+            gy_filename = generate_output_filename(original_filepath, 'Gy')
+            df_gy.to_csv(gy_filename, index=False, float_format='%.6e')
+            saved_files.append(gy_filename)
+        
+        # Export Gy_tool if available
+        if measurement_case == 'case2_y' and G_tool_accel is not None and G_tool is not None:
+            df_gy_tool = create_transfer_function_df(frequencies, G_tool_accel, G_tool, 'Gy_tool')
+            gy_tool_filename = generate_output_filename(original_filepath, 'Gy_tool')
+            df_gy_tool.to_csv(gy_tool_filename, index=False, float_format='%.6e')
+            saved_files.append(gy_tool_filename)
+    
+    else:
+        # Fallback: if direction is not available, export both (for backward compatibility)
+        if Gx_accel is not None and Gx is not None:
+            df_gx = create_transfer_function_df(frequencies, Gx_accel, Gx, 'Gx')
+            gx_filename = generate_output_filename(original_filepath, 'Gx')
+            df_gx.to_csv(gx_filename, index=False, float_format='%.6e')
+            saved_files.append(gx_filename)
+        
+        if Gy_accel is not None and Gy is not None:
+            df_gy = create_transfer_function_df(frequencies, Gy_accel, Gy, 'Gy')
+            gy_filename = generate_output_filename(original_filepath, 'Gy')
+            df_gy.to_csv(gy_filename, index=False, float_format='%.6e')
+            saved_files.append(gy_filename)
     
     return saved_files
 
@@ -2754,11 +3088,10 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
             A3, bias_idx_A3, actual_window_A3 = remove_bias(A3, window_size)
             A4, bias_idx_A4, actual_window_A4 = remove_bias(A4, window_size)
             A5, bias_idx_A5, actual_window_A5 = remove_bias(A5, window_size)
-            A6, _, _ = remove_bias(A6, window_size)
-            A7, _, _ = remove_bias(A7, window_size)
+            A6, bias_idx_A6, actual_window_A6 = remove_bias(A6, window_size)
+            A7, bias_idx_A7, actual_window_A7 = remove_bias(A7, window_size)
             
-            # Apply Wiener filter to A0-A5 if enabled, otherwise use high-pass filter
-            cutoff_hz = params['highpass_cutoff_hz']
+            # Apply Wiener filter to A0-A7 if enabled
             use_wiener = params.get('wiener_filter', True)
             
             # Store original signals before filtering for noise calculation
@@ -2768,67 +3101,83 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
             original_A3 = A3.copy()
             original_A4 = A4.copy()
             original_A5 = A5.copy()
+            original_A6 = A6.copy()
+            original_A7 = A7.copy()
             
             if use_wiener:
-                # Calculate noise power for each channel A0-A5 from bias window
+                # Calculate noise power for each channel A0-A7 from bias window
                 noise_A0 = calculate_noise_power(original_A0, bias_idx_A0, actual_window_A0)
                 noise_A1 = calculate_noise_power(original_A1, bias_idx_A1, actual_window_A1)
                 noise_A2 = calculate_noise_power(original_A2, bias_idx_A2, actual_window_A2)
                 noise_A3 = calculate_noise_power(original_A3, bias_idx_A3, actual_window_A3)
                 noise_A4 = calculate_noise_power(original_A4, bias_idx_A4, actual_window_A4)
                 noise_A5 = calculate_noise_power(original_A5, bias_idx_A5, actual_window_A5)
+                noise_A6 = calculate_noise_power(original_A6, bias_idx_A6, actual_window_A6)
+                noise_A7 = calculate_noise_power(original_A7, bias_idx_A7, actual_window_A7)
                 
-                # Apply Wiener filter to A0-A5
+                # Apply Wiener filter to A0-A7
                 A0 = apply_wiener_filter(A0, noise_A0, actual_window_A0)
                 A1 = apply_wiener_filter(A1, noise_A1, actual_window_A1)
                 A2 = apply_wiener_filter(A2, noise_A2, actual_window_A2)
                 A3 = apply_wiener_filter(A3, noise_A3, actual_window_A3)
                 A4 = apply_wiener_filter(A4, noise_A4, actual_window_A4)
                 A5 = apply_wiener_filter(A5, noise_A5, actual_window_A5)
-            else:
-                # Apply high-pass filter to A0-A5
-                A0 = apply_highpass_filter(A0, cutoff_hz, fs)
-                A1 = apply_highpass_filter(A1, cutoff_hz, fs)
-                A2 = apply_highpass_filter(A2, cutoff_hz, fs)
-                A3 = apply_highpass_filter(A3, cutoff_hz, fs)
-                A4 = apply_highpass_filter(A4, cutoff_hz, fs)
-                A5 = apply_highpass_filter(A5, cutoff_hz, fs)
+                A6 = apply_wiener_filter(A6, noise_A6, actual_window_A6)
+                A7 = apply_wiener_filter(A7, noise_A7, actual_window_A7)
             
-            # Apply high-pass filter to A6, A7 (always use high-pass for these channels)
-            A6 = apply_highpass_filter(A6, cutoff_hz, fs)
-            A7 = apply_highpass_filter(A7, cutoff_hz, fs)
+            # Apply Savitzky-Golay filter to A0-A7 if enabled
+            use_savgol = params.get('savgol_filter', False)
+            if use_savgol:
+                window_length = params.get('savgol_window_length', 10)
+                polyorder = params.get('savgol_polyorder', 3)
+                
+                A0 = apply_savgol_filter(A0, window_length, polyorder)
+                A1 = apply_savgol_filter(A1, window_length, polyorder)
+                A2 = apply_savgol_filter(A2, window_length, polyorder)
+                A3 = apply_savgol_filter(A3, window_length, polyorder)
+                A4 = apply_savgol_filter(A4, window_length, polyorder)
+                A5 = apply_savgol_filter(A5, window_length, polyorder)
+                A6 = apply_savgol_filter(A6, window_length, polyorder)
+                A7 = apply_savgol_filter(A7, window_length, polyorder)
             
-            # Calculate derived signals with measurement case
+            # Calculate derived signals with measurement case (using filtered A0-A7)
             signals = calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measurement_case)
             
-            # Build signal-specific windows (applied after high-pass filter)
+            # Build signal-specific windows
             # Each signal gets its own window based on its own characteristics
             
-            # Create window for u signal
+            # Get window types from parameters
+            input_window_type = params.get('input_window_type', 'hann')
+            output_window_type = params.get('output_window_type', 'exponential')
+            
+            # Create window for u signal (input window)
             window_u, _ = create_window(
                 signals['u'],
                 time,
                 params,
-                dt
+                dt,
+                window_type=input_window_type
             )
             
-            # Create window for x signal
+            # Create window for x signal (output window)
             window_x, _ = create_window(
                 signals['x'],
                 time,
                 params,
-                dt
+                dt,
+                window_type=output_window_type
             )
             
-            # Create window for y signal
+            # Create window for y signal (output window)
             window_y, _ = create_window(
                 signals['y'],
                 time,
                 params,
-                dt
+                dt,
+                window_type=output_window_type
             )
             
-            # Extract tool signal if present and create its window
+            # Extract tool signal if present and create its window (output window)
             tool_signal = None
             if measurement_case == 'case2_x':
                 tool_signal = signals.get('x_tool', None)
@@ -2838,7 +3187,8 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
                         tool_signal,
                         time,
                         params,
-                        dt
+                        dt,
+                        window_type=output_window_type
                     )
                     tool_signal = tool_signal * window_tool
             elif measurement_case == 'case2_y':
@@ -2849,7 +3199,8 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
                         tool_signal,
                         time,
                         params,
-                        dt
+                        dt,
+                        window_type=output_window_type
                     )
                     tool_signal = tool_signal * window_tool
             
@@ -3154,14 +3505,27 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
                                fft_results['dt'], fft_results['N'], show_plot=True)
         
         # Save results (use first file's path for naming)
-        saved_files = save_results(fft_results['frequencies'], tf_results['Gx'], tf_results['Gy'], 
-                                 filepaths[0], save_files)
+        saved_files = save_results(
+            fft_results['frequencies'], 
+            tf_results['Gx'], 
+            tf_results['Gy'], 
+            filepaths[0], 
+            save_files,
+            metadata=metadata,
+            measurement_case=measurement_case,
+            Gx_accel=tf_accel_results['Gx'],
+            Gy_accel=tf_accel_results['Gy'],
+            G_tool=tf_results.get('G_tool', None),
+            G_tool_accel=tf_accel_results.get('G_tool', None)
+        )
         
         # Prepare return data
         result = {
             'frequencies': fft_results['frequencies'],
             'Gx': tf_results['Gx'],
             'Gy': tf_results['Gy'],
+            'Gx_accel': tf_accel_results['Gx'],
+            'Gy_accel': tf_accel_results['Gy'],
             'metadata': metadata,
             'saved_files': saved_files,
             'sample_rate': 1 / fft_results['dt'],
@@ -3173,6 +3537,8 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
         # Add tool transfer function if present
         if 'G_tool' in tf_results:
             result['G_tool'] = tf_results['G_tool']
+        if 'G_tool' in tf_accel_results:
+            result['G_tool_accel'] = tf_accel_results['G_tool']
         
         return result
         
@@ -3218,16 +3584,15 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
         
         # Remove bias from all analog input signals
         window_size = params['bias_window_size']
-        # For A0-A5: capture window location for noise calculation
+        # Capture window location for noise calculation for all channels
         A0, bias_idx_A0, actual_window_A0 = remove_bias(A0, window_size)
         A1, bias_idx_A1, actual_window_A1 = remove_bias(A1, window_size)
         A2, bias_idx_A2, actual_window_A2 = remove_bias(A2, window_size)
         A3, bias_idx_A3, actual_window_A3 = remove_bias(A3, window_size)
         A4, bias_idx_A4, actual_window_A4 = remove_bias(A4, window_size)
         A5, bias_idx_A5, actual_window_A5 = remove_bias(A5, window_size)
-        # For A6-A7: keep simple return (no Wiener filter needed)
-        A6, _, _ = remove_bias(A6, window_size)
-        A7, _, _ = remove_bias(A7, window_size)
+        A6, bias_idx_A6, actual_window_A6 = remove_bias(A6, window_size)
+        A7, bias_idx_A7, actual_window_A7 = remove_bias(A7, window_size)
         
         # Store corrected signals for comparison plots
         corrected_signals = {
@@ -3235,8 +3600,7 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
             'A4': A4, 'A5': A5, 'A6': A6, 'A7': A7
         }
         
-        # Apply Wiener filter to A0-A5 if enabled, otherwise use high-pass filter
-        cutoff_hz = params['highpass_cutoff_hz']
+        # Apply Wiener filter to A0-A7 if enabled
         use_wiener = params.get('wiener_filter', True)
         
         # Store original signals before filtering for noise calculation
@@ -3246,48 +3610,71 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
         original_A3 = A3.copy()
         original_A4 = A4.copy()
         original_A5 = A5.copy()
+        original_A6 = A6.copy()
+        original_A7 = A7.copy()
         
         if use_wiener:
-            # Calculate noise power for each channel A0-A5 from bias window
+            # Calculate noise power for each channel A0-A7 from bias window
             noise_A0 = calculate_noise_power(original_A0, bias_idx_A0, actual_window_A0)
             noise_A1 = calculate_noise_power(original_A1, bias_idx_A1, actual_window_A1)
             noise_A2 = calculate_noise_power(original_A2, bias_idx_A2, actual_window_A2)
             noise_A3 = calculate_noise_power(original_A3, bias_idx_A3, actual_window_A3)
             noise_A4 = calculate_noise_power(original_A4, bias_idx_A4, actual_window_A4)
             noise_A5 = calculate_noise_power(original_A5, bias_idx_A5, actual_window_A5)
+            noise_A6 = calculate_noise_power(original_A6, bias_idx_A6, actual_window_A6)
+            noise_A7 = calculate_noise_power(original_A7, bias_idx_A7, actual_window_A7)
             
-            # Apply Wiener filter to A0-A5
+            # Apply Wiener filter to A0-A7
             A0 = apply_wiener_filter(A0, noise_A0, actual_window_A0)
             A1 = apply_wiener_filter(A1, noise_A1, actual_window_A1)
             A2 = apply_wiener_filter(A2, noise_A2, actual_window_A2)
             A3 = apply_wiener_filter(A3, noise_A3, actual_window_A3)
             A4 = apply_wiener_filter(A4, noise_A4, actual_window_A4)
             A5 = apply_wiener_filter(A5, noise_A5, actual_window_A5)
-        else:
-            # Apply high-pass filter to A0-A5
-            A0 = apply_highpass_filter(A0, cutoff_hz, fs)
-            A1 = apply_highpass_filter(A1, cutoff_hz, fs)
-            A2 = apply_highpass_filter(A2, cutoff_hz, fs)
-            A3 = apply_highpass_filter(A3, cutoff_hz, fs)
-            A4 = apply_highpass_filter(A4, cutoff_hz, fs)
-            A5 = apply_highpass_filter(A5, cutoff_hz, fs)
+            A6 = apply_wiener_filter(A6, noise_A6, actual_window_A6)
+            A7 = apply_wiener_filter(A7, noise_A7, actual_window_A7)
         
-        # Apply high-pass filter to A6, A7 (always use high-pass for these channels)
-        A6 = apply_highpass_filter(A6, cutoff_hz, fs)
-        A7 = apply_highpass_filter(A7, cutoff_hz, fs)
-        
-        # Store filtered signals for comparison plots
+        # Store filtered signals (after Wiener filter, before Savitzky-Golay) for comparison plots
         filtered_signals = {
             'A0': A0, 'A1': A1, 'A2': A2, 'A3': A3,
             'A4': A4, 'A5': A5, 'A6': A6, 'A7': A7
         }
+        
+        # Store signals before Savitzky-Golay filter (these are the "raw" signals for comparison)
+        raw_signals_before_savgol = {
+            'A0': A0.copy(), 'A1': A1.copy(), 'A2': A2.copy(), 'A3': A3.copy(),
+            'A4': A4.copy(), 'A5': A5.copy(), 'A6': A6.copy(), 'A7': A7.copy()
+        }
+        
+        # Apply Savitzky-Golay filter to A0-A7 if enabled
+        use_savgol = params.get('savgol_filter', False)
+        if use_savgol:
+            window_length = params.get('savgol_window_length', 10)
+            polyorder = params.get('savgol_polyorder', 3)
+            
+            A0 = apply_savgol_filter(A0, window_length, polyorder)
+            A1 = apply_savgol_filter(A1, window_length, polyorder)
+            A2 = apply_savgol_filter(A2, window_length, polyorder)
+            A3 = apply_savgol_filter(A3, window_length, polyorder)
+            A4 = apply_savgol_filter(A4, window_length, polyorder)
+            A5 = apply_savgol_filter(A5, window_length, polyorder)
+            A6 = apply_savgol_filter(A6, window_length, polyorder)
+            A7 = apply_savgol_filter(A7, window_length, polyorder)
+            
+            # Store Savitzky-Golay filtered signals for plotting
+            savgol_filtered_signals = {
+                'A0': A0, 'A1': A1, 'A2': A2, 'A3': A3,
+                'A4': A4, 'A5': A5, 'A6': A6, 'A7': A7
+            }
+        else:
+            savgol_filtered_signals = None
         
         # Store Wiener filtered signals separately for plotting (if Wiener was applied)
         wiener_filtered_signals = None
         if use_wiener:
             wiener_filtered_signals = {
                 'A0': A0, 'A1': A1, 'A2': A2, 'A3': A3,
-                'A4': A4, 'A5': A5
+                'A4': A4, 'A5': A5, 'A6': A6, 'A7': A7
             }
         
         # Show signal comparison plots (only if show_all_figures is True)
@@ -3318,48 +3705,64 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
         
         # Show Wiener filtered signals plot (if Wiener filter was applied, only if show_all_figures is True)
         if show_all_figures and use_wiener and wiener_filtered_signals is not None:
-            # Extract only A0-A5 from corrected_signals for comparison
-            corrected_signals_A0_A5 = {
+            # Extract A0-A7 from corrected_signals for comparison
+            corrected_signals_A0_A7 = {
                 'A0': corrected_signals['A0'],
                 'A1': corrected_signals['A1'],
                 'A2': corrected_signals['A2'],
                 'A3': corrected_signals['A3'],
                 'A4': corrected_signals['A4'],
-                'A5': corrected_signals['A5']
+                'A5': corrected_signals['A5'],
+                'A6': corrected_signals['A6'],
+                'A7': corrected_signals['A7']
             }
-            plot_wiener_filtered_signals(time, corrected_signals_A0_A5, wiener_filtered_signals, show_plot)
+            plot_wiener_filtered_signals(time, corrected_signals_A0_A7, wiener_filtered_signals, show_plot)
         
-        # Calculate derived signals with measurement case
+        # Show Savitzky-Golay filtered signals plot (if Savitzky-Golay filter was applied, only if show_all_figures is True)
+        if show_all_figures and use_savgol and savgol_filtered_signals is not None:
+            window_length = params.get('savgol_window_length', 10)
+            polyorder = params.get('savgol_polyorder', 3)
+            plot_savgol_filtered_signals(time, raw_signals_before_savgol, savgol_filtered_signals, 
+                                        window_length, polyorder, show_plot)
+        
+        # Calculate derived signals with measurement case (using filtered A0-A7)
         signals = calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measurement_case)
 
-        # Build signal-specific windows (applied after high-pass filter)
+        # Build signal-specific windows
         # Each signal gets its own window based on its own characteristics
         
-        # Create window for u signal
+        # Get window types from parameters
+        input_window_type = params.get('input_window_type', 'hann')
+        output_window_type = params.get('output_window_type', 'exponential')
+        
+        # Create window for u signal (input window)
         window_u, window_metadata_u = create_window(
             signals['u'],
             time,
             params,
-            dt
+            dt,
+            window_type=input_window_type
         )
         
-        # Create window for x signal
+        # Create window for x signal (output window)
         window_x, window_metadata_x = create_window(
             signals['x'],
             time,
             params,
-            dt
+            dt,
+            window_type=output_window_type
         )
         
-        # Create window for y signal
+        # Create window for y signal (output window)
         window_y, window_metadata_y = create_window(
             signals['y'],
             time,
             params,
-            dt
+            dt,
+            window_type=output_window_type
         )
         
-        # Extract tool signal if present and create its window
+        # Extract tool signal if present and create its window (output window)
         tool_signal = None
         tool_label = None
         window_tool = None
@@ -3372,7 +3775,8 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
                     tool_signal,
                     time,
                     params,
-                    dt
+                    dt,
+                    window_type=output_window_type
                 )
         elif measurement_case == 'case2_y':
             tool_signal = signals.get('y_tool', None)
@@ -3382,7 +3786,8 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
                     tool_signal,
                     time,
                     params,
-                    dt
+                    dt,
+                    window_type=output_window_type
                 )
 
         # Apply each window to its corresponding signal
@@ -3482,14 +3887,27 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
                                            Tool_freq=Tool_freq_full, tool_label=tool_label)
         
         # Save results
-        saved_files = save_results(fft_results['frequencies'], tf_results['Gx'], tf_results['Gy'], 
-                                 filepath, save_files)
+        saved_files = save_results(
+            fft_results['frequencies'], 
+            tf_results['Gx'], 
+            tf_results['Gy'], 
+            filepath, 
+            save_files,
+            metadata=metadata,
+            measurement_case=measurement_case,
+            Gx_accel=tf_accel_results['Gx'],
+            Gy_accel=tf_accel_results['Gy'],
+            G_tool=tf_results.get('G_tool', None),
+            G_tool_accel=tf_accel_results.get('G_tool', None)
+        )
         
         # Prepare return data
         result = {
             'frequencies': fft_results['frequencies'],
             'Gx': tf_results['Gx'],
             'Gy': tf_results['Gy'],
+            'Gx_accel': tf_accel_results['Gx'],
+            'Gy_accel': tf_accel_results['Gy'],
             'metadata': metadata,
             'saved_files': saved_files,
             'sample_rate': 1 / fft_results['dt'],
@@ -3509,6 +3927,8 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
         # Add tool transfer function if present
         if 'G_tool' in tf_results:
             result['G_tool'] = tf_results['G_tool']
+        if 'G_tool' in tf_accel_results:
+            result['G_tool_accel'] = tf_accel_results['G_tool']
         
         return result
         
@@ -3681,7 +4101,19 @@ def main():
             save_files = messagebox.askyesno("Save Options", "Do you want to save the output CSV files?")
             
             if save_files:
-                saved_files = save_results(result['frequencies'], result['Gx'], result['Gy'], filepath, save_files=True)
+                saved_files = save_results(
+                    result['frequencies'], 
+                    result['Gx'], 
+                    result['Gy'], 
+                    filepath, 
+                    save_files=True,
+                    metadata=result['metadata'],
+                    measurement_case=measurement_case,
+                    Gx_accel=result.get('Gx_accel', None),
+                    Gy_accel=result.get('Gy_accel', None),
+                    G_tool=result.get('G_tool', None),
+                    G_tool_accel=result.get('G_tool_accel', None)
+                )
                 result['saved_files'] = saved_files
                 print(f"\nSaved files:")
                 for file in saved_files:
@@ -3711,7 +4143,19 @@ def main():
             save_files = messagebox.askyesno("Save Options", "Do you want to save the output CSV files?")
             
             if save_files:
-                saved_files = save_results(result['frequencies'], result['Gx'], result['Gy'], filepaths[0], save_files=True)
+                saved_files = save_results(
+                    result['frequencies'], 
+                    result['Gx'], 
+                    result['Gy'], 
+                    filepaths[0], 
+                    save_files=True,
+                    metadata=result['metadata'],
+                    measurement_case=measurement_case,
+                    Gx_accel=result.get('Gx_accel', None),
+                    Gy_accel=result.get('Gy_accel', None),
+                    G_tool=result.get('G_tool', None),
+                    G_tool_accel=result.get('G_tool_accel', None)
+                )
                 result['saved_files'] = saved_files
                 print(f"\nSaved files:")
                 for file in saved_files:
