@@ -21,6 +21,7 @@ from pathlib import Path
 import warnings
 from scipy import signal
 from pyFRF import FRF
+import sys
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
@@ -62,16 +63,16 @@ def get_system_parameters():
     bias_window_size = 1000  # Number of samples for bias estimation window
     
     # Wiener filter parameters
-    wiener_filter = True  # Toggle to enable/disable Wiener filter for channels A0-A7
+    wiener_filter = False  # Toggle to enable/disable Wiener filter for channels A0-A7
     
     # Savitzky-Golay filter parameters
-    savgol_filter = True  # Toggle to enable/disable Savitzky-Golay filter for channels A0-A7
+    savgol_filter = False  # Toggle to enable/disable Savitzky-Golay filter for channels A0-A7
     savgol_window_length = 10  # Window length for Savitzky-Golay filter (must be odd)
     savgol_polyorder = 2  # Polynomial order for Savitzky-Golay filter
     
     # Low-pass filter parameters (for analysis visualization only)
-    lowpass_filter = True  # Toggle to enable/disable low-pass filter for channels A0-A7
-    lowpass_bandwidth_hz = 100.0  # Low-pass filter bandwidth (Hz) for analysis plots
+    lowpass_filter = False  # Toggle to enable/disable low-pass filter for channels A0-A7
+    lowpass_bandwidth_hz = 10.0  # Low-pass filter bandwidth (Hz) for analysis plots
     
     # Window type parameters
     input_window_type = 'hann'  # Window type for input (force) signal: 'hann', 'exponential', 'raised-cosine', 'signal-based', or 'constant'
@@ -1869,7 +1870,7 @@ def plot_csd_psd_before_averaging(csd_psd_list, filepaths, averaged_csd_psd=None
         axes[idx].axis('off')
     
     plt.tight_layout()
-    plt.show()
+    # Do not call plt.show() here; show all figures once at the end.
 
 def plot_signal_comparison(time, original_signals, corrected_signals, filtered_signals, show_plot=True):
     """
@@ -1912,7 +1913,7 @@ def plot_signal_comparison(time, original_signals, corrected_signals, filtered_s
         ax.legend(fontsize=8)
     
     plt.tight_layout()
-    plt.show()
+    # Do not call plt.show() here; show all figures once at the end.
 
 def plot_lowpass_filtered_signals(time, bias_corrected_signals, lowpass_filtered_signals, bandwidth_hz, show_plot=True):
     """
@@ -1954,7 +1955,7 @@ def plot_lowpass_filtered_signals(time, bias_corrected_signals, lowpass_filtered
         ax.legend(fontsize=8)
     
     plt.tight_layout()
-    plt.show()
+    # Do not call plt.show() here; show all figures once at the end.
 
 def plot_wiener_filtered_signals(time, bias_corrected_signals, wiener_filtered_signals, show_plot=True):
     """
@@ -1994,7 +1995,7 @@ def plot_wiener_filtered_signals(time, bias_corrected_signals, wiener_filtered_s
         ax.legend(fontsize=8)
     
     plt.tight_layout()
-    plt.show()
+    # Do not call plt.show() here; show all figures once at the end.
 
 def plot_savgol_filtered_signals(time, raw_signals, savgol_filtered_signals, window_length, polyorder, show_plot=True):
     """
@@ -2039,7 +2040,7 @@ def plot_savgol_filtered_signals(time, raw_signals, savgol_filtered_signals, win
         ax.legend(fontsize=8)
     
     plt.tight_layout()
-    plt.show()
+    # Do not call plt.show() here; show all figures once at the end.
 
 def plot_time_domain_signals(time, u, x, y, show_plot=True, windows=None, tool_accel=None, tool_label=None):
     """
@@ -2129,7 +2130,7 @@ def plot_time_domain_signals(time, u, x, y, show_plot=True, windows=None, tool_a
         axes[2].set_xlabel('Time (s)')
     
     plt.tight_layout()
-    plt.show()
+    # Do not call plt.show() here; show all figures once at the end.
 
 def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_plot=True, G_tool=None, G_tool_accel=None, tool_label=None):
     """
@@ -2358,7 +2359,7 @@ def plot_bode_diagram(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_pl
         ax[1, 2].legend()
     
     plt.tight_layout()
-    plt.show()
+    # Do not call plt.show() here; show all figures once at the end.
 
 def plot_real_transfer_functions(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=None, show_plot=True, G_tool=None, G_tool_accel=None, tool_label=None):
     """
@@ -2519,7 +2520,7 @@ def plot_real_transfer_functions(frequencies, Gx, Gy, Gx_accel=None, Gy_accel=No
         axes[1, 1].set_xlabel('Frequency (Hz)')
     
     plt.tight_layout()
-    plt.show()
+    # Do not call plt.show() here; show all figures once at the end.
 
 def plot_reconstructed_time_signals(time, u, X_freq, Y_freq, show_plot=True, Tool_freq=None, tool_label=None):
     """
@@ -2586,7 +2587,7 @@ def plot_reconstructed_time_signals(time, u, X_freq, Y_freq, show_plot=True, Too
         axes[2].set_xlabel('Time (s)')
     
     plt.tight_layout()
-    plt.show()
+    # Do not call plt.show() here; show all figures once at the end.
 
 def plot_fft_magnitudes(frequencies, X_accel, Y_accel, Tool_accel=None, show_plot=True):
     """
@@ -2682,7 +2683,7 @@ def plot_fft_magnitudes(frequencies, X_accel, Y_accel, Tool_accel=None, show_plo
         axes[1].set_xlabel('Frequency (Hz)')
     
     plt.tight_layout()
-    plt.show()
+    # Do not call plt.show() here; show all figures once at the end.
 
 def plot_force_psd(frequencies, U, dt, N, show_plot=True):
     """
@@ -2738,7 +2739,7 @@ def plot_force_psd(frequencies, U, dt, N, show_plot=True):
     ax.grid(True, which="both", ls="-", alpha=0.3)
     
     plt.tight_layout()
-    plt.show()
+    # Do not call plt.show() here; show all figures once at the end.
 
 def plot_coherence(frequencies, coherence_ux, coherence_uy, show_plot=True, tool_coherence=None, tool_label=None):
     """
@@ -2835,7 +2836,7 @@ def plot_coherence(frequencies, coherence_ux, coherence_uy, show_plot=True, tool
         axes[1].set_xlabel('Frequency (Hz)')
     
     plt.tight_layout()
-    plt.show()
+    # Do not call plt.show() here; show all figures once at the end.
 
 # =============================================================================
 # FILE OUTPUT
@@ -3958,8 +3959,9 @@ def select_measurement_case(root=None):
     
     Returns:
     --------
-    str : Case identifier ('case1', 'case2_x', or 'case2_y')
+    str : Case identifier ('case1' or 'case2')
         Returns None if user cancels
+        Note: For 'case2', the direction (x/y) will be inferred from filename later
     """
     # Use provided root or create new one
     created_root = False
@@ -3991,43 +3993,8 @@ def select_measurement_case(root=None):
         dialog.destroy()
     
     def select_case2():
-        # Close main dialog
+        result[0] = 'case2'
         dialog.destroy()
-        
-        # Create sub-dialog for Case 2 direction
-        sub_dialog = tk.Toplevel(root)
-        sub_dialog.title("Select Tool Direction")
-        sub_dialog.geometry("350x150")
-        sub_dialog.grab_set()
-        
-        # Bring sub-dialog to front and give it focus
-        sub_dialog.lift()
-        sub_dialog.focus_force()
-        root.update()
-        
-        tk.Label(sub_dialog, text="Select accelerometer direction at tool:", 
-                font=("Arial", 10)).pack(pady=10)
-        
-        def select_x():
-            result[0] = 'case2_x'
-            sub_dialog.destroy()
-        
-        def select_y():
-            result[0] = 'case2_y'
-            sub_dialog.destroy()
-        
-        btn_x = tk.Button(sub_dialog, text="2.1 X-direction", command=select_x, 
-                         width=20, height=2)
-        btn_x.pack(pady=5)
-        
-        btn_y = tk.Button(sub_dialog, text="2.2 Y-direction", command=select_y, 
-                         width=20, height=2)
-        btn_y.pack(pady=5)
-        
-        # Update to ensure buttons are visible
-        root.update()
-        
-        sub_dialog.wait_window()
     
     # Main dialog content
     tk.Label(dialog, text="Select measurement case:", 
@@ -4052,6 +4019,80 @@ def select_measurement_case(root=None):
         root.destroy()
     
     return result[0]
+
+def infer_case2_direction(filepaths, root=None):
+    """
+    Infer Case 2 direction (x or y) from selected file(s) based on filename suffix.
+    
+    Parameters:
+    -----------
+    filepaths : list
+        List of file paths to analyze
+    root : tk.Tk, optional
+        Root window for error dialogs. If None, creates a temporary one.
+    
+    Returns:
+    --------
+    str : Final measurement case identifier ('case2_x' or 'case2_y')
+        Returns None if error occurs or directions are mixed
+    
+    Raises:
+    -------
+    ValueError : If files have mixed directions or cannot be parsed
+    """
+    if not filepaths:
+        return None
+    
+    directions = []
+    
+    # Parse each file to extract direction
+    for filepath in filepaths:
+        try:
+            metadata = parse_filename(filepath)
+            direction = metadata['direction'].lower()
+            if direction not in ['x', 'y']:
+                raise ValueError(f"Unexpected direction '{direction}' in file: {filepath}")
+            directions.append(direction)
+        except Exception as e:
+            # If parsing fails, show error and return None
+            error_msg = f"Error parsing filename: {str(e)}\n\nFile: {os.path.basename(filepath)}"
+            if root is not None:
+                messagebox.showerror("File Parsing Error", error_msg)
+            else:
+                print(f"Error: {error_msg}")
+            return None
+    
+    # Check if all directions are the same
+    if len(set(directions)) > 1:
+        # Mixed directions - show error
+        error_msg = (
+            "Selected files have mixed directions (both _x and _y).\n\n"
+            "Please select files with the same direction suffix.\n\n"
+            "Files selected:\n" + "\n".join([f"  - {os.path.basename(fp)} ({d})" 
+                                            for fp, d in zip(filepaths, directions)])
+        )
+        if root is not None:
+            messagebox.showerror("Mixed Directions Error", error_msg)
+        else:
+            print(f"Error: {error_msg}")
+        return None
+    
+    # All files have the same direction
+    direction = directions[0]
+    return f'case2_{direction}'
+
+def wait_for_quit_and_close_plots():
+    """
+    Show all plots once at the end.
+
+    This is intentionally simple: `plt.show()` blocks while figures are open and
+    returns when the user closes the plot windows manually.
+    """
+    # If no figures were created, nothing to do.
+    if len(plt.get_fignums()) == 0:
+        return
+
+    plt.show()
 
 def main():
     """
@@ -4083,6 +4124,15 @@ def main():
         
         # Convert tuple to list
         filepaths = list(filepaths)
+        
+        # If Case 2 was selected, infer direction from filename(s)
+        if measurement_case == 'case2':
+            final_measurement_case = infer_case2_direction(filepaths, root)
+            if not final_measurement_case:
+                print("Failed to infer Case 2 direction. Exiting.")
+                return
+            measurement_case = final_measurement_case
+            print(f"Inferred measurement case from filename(s): {measurement_case}")
         
         # Determine if single or multiple files
         if len(filepaths) == 1:
@@ -4167,6 +4217,9 @@ def main():
                 print(f"\nSaved files:")
                 for file in saved_files:
                     print(f"  - {file}")
+        
+        # Wait for user to quit before closing plots
+        wait_for_quit_and_close_plots()
         
     except Exception as e:
         import traceback
