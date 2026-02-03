@@ -548,7 +548,7 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measuremen
     params : dict
         System parameters dictionary
     measurement_case : str
-        Measurement case identifier: 'case1', 'case2_x', or 'case2_y'
+        Measurement case identifier: 'case1', 'case2_x', 'case2_y', or 'case3'
         
     Returns:
     --------
@@ -560,6 +560,7 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measuremen
         theta_y : Angular displacement about Y-axis (rad)
         x_tool : X-direction tool acceleration (m/s²) - only for case2_x
         y_tool : Y-direction tool acceleration (m/s²) - only for case2_y
+        z : Z-direction acceleration (m/s²) - only for case3
     """
     # Extract parameters
     L1 = params['L1']
@@ -583,6 +584,7 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measuremen
         'theta_y': theta_y
     }
     
+
     # Case 1: Accelerometers only on z-slide (original equations)
     if measurement_case == 'case1':
         x = (-(A0 - A1 + A2 - A3) / np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2) - A4) * r_a
@@ -607,6 +609,21 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measuremen
         result['x'] = x
         result['y'] = y
         result['y_tool'] = y_tool
+    
+    # Case 3: XYZ measurement case
+    elif measurement_case == 'case3':
+        # Convert angles from degrees to radians
+        alpha1 = 57.1715 * np.pi / 180  # radians
+        beta1 = 76.8368 * np.pi / 180   # radians
+        beta2 = 85.2045 * np.pi / 180   # radians
+        
+        x = ((A3 - A2) / np.cos(alpha1) - A4) * r_a
+        y = ((A2 + A3) / np.cos(beta1) - A5) * r_a
+        # Note: y already has r_a applied, so divide by r_a before using in z calculation
+        z = ((A0 - (y / r_a + A5) * np.cos(beta2)) / np.cos(np.pi / 2 - beta2)) * r_a
+        result['x'] = x
+        result['y'] = y
+        result['z'] = z
     
     else:
         raise ValueError(f"Unknown measurement case: {measurement_case}")
@@ -2042,10 +2059,10 @@ def plot_savgol_filtered_signals(time, raw_signals, savgol_filtered_signals, win
     plt.tight_layout()
     # Do not call plt.show() here; show all figures once at the end.
 
-def plot_time_domain_signals(time, u, x, y, show_plot=True, windows=None, tool_accel=None, tool_label=None):
+def plot_time_domain_signals(time, u, x, y, show_plot=True, windows=None, tool_accel=None, tool_label=None, z_accel=None):
     """
     Plot time-domain signals u, x, y in a single figure with synchronized x-axes.
-    Optionally includes tool acceleration signal as 4th subplot.
+    Optionally includes z acceleration signal as 4th subplot and tool acceleration signal as 5th subplot.
     Each signal can have its own window overlay.
     
     Parameters:
@@ -2062,18 +2079,24 @@ def plot_time_domain_signals(time, u, x, y, show_plot=True, windows=None, tool_a
         Whether to display the plot
     windows : dict, optional
         Dictionary of window functions to overlay on plots.
-        Keys: 'u', 'x', 'y', 'tool' (optional)
+        Keys: 'u', 'x', 'y', 'z', 'tool' (optional)
         Values: window arrays matching time length
     tool_accel : array_like, optional
         Tool acceleration signal (m/s²) - x_tool or y_tool
     tool_label : str, optional
         Label for tool acceleration (e.g., 'x_tool' or 'y_tool')
+    z_accel : array_like, optional
+        Z-direction acceleration signal (m/s²) - only for case3
     """
     if not show_plot:
         return
     
     # Determine number of subplots
-    n_plots = 4 if tool_accel is not None else 3
+    n_plots = 3
+    if z_accel is not None:
+        n_plots += 1
+    if tool_accel is not None:
+        n_plots += 1
     fig, axes = plt.subplots(n_plots, 1, figsize=(12, 10 + 2.5 * (n_plots - 3)), sharex=True)
     
     # Plot force u
@@ -2112,22 +2135,43 @@ def plot_time_domain_signals(time, u, x, y, show_plot=True, windows=None, tool_a
         axes[2].plot(time, window_y * scale, 'k--', linewidth=1, label='Window')
         axes[2].legend(fontsize=8)
     
+    # Track current axis index
+    current_axis = 3
+    
+    # Plot z acceleration if provided (before tool)
+    if z_accel is not None:
+        axes[current_axis].plot(time, z_accel, 'c-', linewidth=1, label='z (windowed)')
+        axes[current_axis].set_ylabel('Acceleration (m/s²)')
+        axes[current_axis].set_title('Z-Direction Acceleration z(t)')
+        axes[current_axis].grid(True, alpha=0.3)
+        if windows is not None and 'z' in windows:
+            window_z = windows['z']
+            scale = np.max(np.abs(z_accel))
+            scale = scale if scale > 0 else 1.0
+            axes[current_axis].plot(time, window_z * scale, 'k--', linewidth=1, label='Window')
+            axes[current_axis].legend(fontsize=8)
+        current_axis += 1
+    
     # Plot tool acceleration if provided
     if tool_accel is not None:
-        axes[3].plot(time, tool_accel, 'm-', linewidth=1, label=f'{tool_label} (windowed)')
-        axes[3].set_xlabel('Time (s)')
-        axes[3].set_ylabel('Acceleration (m/s²)')
+        axes[current_axis].plot(time, tool_accel, 'm-', linewidth=1, label=f'{tool_label} (windowed)')
+        axes[current_axis].set_xlabel('Time (s)')
+        axes[current_axis].set_ylabel('Acceleration (m/s²)')
         title_label = tool_label.replace('_', ' ').title() if tool_label else 'Tool Acceleration'
-        axes[3].set_title(f'Tool Acceleration {title_label}(t)')
-        axes[3].grid(True, alpha=0.3)
+        axes[current_axis].set_title(f'Tool Acceleration {title_label}(t)')
+        axes[current_axis].grid(True, alpha=0.3)
         if windows is not None and 'tool' in windows:
             window_tool = windows['tool']
             scale = np.max(np.abs(tool_accel))
             scale = scale if scale > 0 else 1.0
-            axes[3].plot(time, window_tool * scale, 'k--', linewidth=1, label='Window')
-            axes[3].legend(fontsize=8)
+            axes[current_axis].plot(time, window_tool * scale, 'k--', linewidth=1, label='Window')
+            axes[current_axis].legend(fontsize=8)
     else:
-        axes[2].set_xlabel('Time (s)')
+        # Set xlabel on the last plotted axis
+        if z_accel is not None:
+            axes[current_axis - 1].set_xlabel('Time (s)')
+        else:
+            axes[2].set_xlabel('Time (s)')
     
     plt.tight_layout()
     # Do not call plt.show() here; show all figures once at the end.
@@ -3008,7 +3052,7 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
     filepaths : list
         List of paths to input CSV files
     measurement_case : str
-        Measurement case identifier: 'case1', 'case2_x', or 'case2_y'
+        Measurement case identifier: 'case1', 'case2_x', 'case2_y', or 'case3'
     show_plot : bool
         Whether to display plots (controlled by show_all_figures for which plots)
     save_files : bool
@@ -3018,6 +3062,7 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
     --------
     dict : Contains frequencies, Gx, Gy, and metadata
         Optionally includes G_tool for Case 2
+        Note: For case3, z signal is calculated but not included in FRF analysis
     """
     try:
         # Load system parameters
@@ -3179,6 +3224,20 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
                 dt,
                 window_type=output_window_type
             )
+            
+            # Extract z signal if present (case3) and create its window (output window)
+            z_signal = None
+            if measurement_case == 'case3':
+                z_signal = signals.get('z', None)
+                if z_signal is not None:
+                    window_z, _ = create_window(
+                        z_signal,
+                        time,
+                        params,
+                        dt,
+                        window_type=output_window_type
+                    )
+                    z_signal = z_signal * window_z
             
             # Extract tool signal if present and create its window (output window)
             tool_signal = None
@@ -3558,7 +3617,7 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
     filepath : str
         Path to input CSV file
     measurement_case : str
-        Measurement case identifier: 'case1', 'case2_x', or 'case2_y'
+        Measurement case identifier: 'case1', 'case2_x', 'case2_y', or 'case3'
     show_plot : bool
         Whether to display Bode plots
     save_files : bool
@@ -3568,6 +3627,7 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
     --------
     dict : Contains frequencies, Gx, Gy, and metadata
         Optionally includes G_tool for Case 2
+        Note: For case3, z signal is calculated but not included in FRF analysis
     """
     try:
         # Load system parameters
@@ -3770,6 +3830,22 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
             window_type=output_window_type
         )
         
+        # Extract z signal if present (case3) and create its window (output window)
+        z_signal = None
+        window_z = None
+        window_metadata_z = None
+        if measurement_case == 'case3':
+            z_signal = signals.get('z', None)
+            if z_signal is not None:
+                window_z, window_metadata_z = create_window(
+                    z_signal,
+                    time,
+                    params,
+                    dt,
+                    window_type=output_window_type
+                )
+                z_signal = z_signal * window_z
+        
         # Extract tool signal if present and create its window (output window)
         tool_signal = None
         tool_label = None
@@ -3815,6 +3891,8 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
             'x': window_x,
             'y': window_y
         }
+        if window_z is not None:
+            windows_dict['z'] = window_z
         if window_tool is not None:
             windows_dict['tool'] = window_tool
         
@@ -3822,7 +3900,8 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
         if show_all_figures:
             plot_time_domain_signals(time, windowed_signals['u'], windowed_signals['x'], 
                                     windowed_signals['y'], show_plot, windows=windows_dict,
-                                    tool_accel=tool_signal, tool_label=tool_label)
+                                    tool_accel=tool_signal, tool_label=tool_label,
+                                    z_accel=z_signal)
         
         # Perform frequency domain analysis using pyFRF
         fft_results = perform_pyfrf_analysis(time, windowed_signals['u'], windowed_signals['x'], 
@@ -3927,6 +4006,10 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
                 'y': window_metadata_y
             }
         }
+        
+        # Add z window metadata if present
+        if window_metadata_z is not None:
+            result['window_metadata']['z'] = window_metadata_z
         
         # Add tool window metadata if present
         if window_metadata_tool is not None:
@@ -4081,6 +4164,58 @@ def infer_case2_direction(filepaths, root=None):
     direction = directions[0]
     return f'case2_{direction}'
 
+def detect_case3_from_filename(filepaths, root=None):
+    """
+    Detect Case 3 from selected file(s) based on "XYZ" appearing in filename.
+    
+    Parameters:
+    -----------
+    filepaths : list
+        List of file paths to analyze
+    root : tk.Tk, optional
+        Root window for error dialogs. If None, creates a temporary one.
+    
+    Returns:
+    --------
+    str : 'case3' if detected, None otherwise
+    
+    Raises:
+    -------
+    ValueError : If files have mixed cases (some with "XYZ", some without)
+    """
+    if not filepaths:
+        return None
+    
+    has_xyz = []
+    
+    # Check each file for "XYZ" in filename (case-insensitive)
+    for filepath in filepaths:
+        filename = os.path.basename(filepath)
+        has_xyz.append('xyz' in filename.lower())
+    
+    # Check if all files have the same case
+    if len(set(has_xyz)) > 1:
+        # Mixed cases - show error
+        xyz_files = [fp for fp, has in zip(filepaths, has_xyz) if has]
+        non_xyz_files = [fp for fp, has in zip(filepaths, has_xyz) if not has]
+        error_msg = (
+            "Selected files have mixed measurement cases.\n\n"
+            "Some files contain 'XYZ' in filename (Case 3), while others do not.\n\n"
+            "Files with 'XYZ':\n" + "\n".join([f"  - {os.path.basename(fp)}" for fp in xyz_files]) + "\n\n"
+            "Files without 'XYZ':\n" + "\n".join([f"  - {os.path.basename(fp)}" for fp in non_xyz_files])
+        )
+        if root is not None:
+            messagebox.showerror("Mixed Measurement Cases Error", error_msg)
+        else:
+            print(f"Error: {error_msg}")
+        return None
+    
+    # All files have the same case - return 'case3' if all have XYZ, None otherwise
+    if all(has_xyz):
+        return 'case3'
+    else:
+        return None
+
 def wait_for_quit_and_close_plots():
     """
     Show all plots once at the end.
@@ -4125,8 +4260,13 @@ def main():
         # Convert tuple to list
         filepaths = list(filepaths)
         
+        # Check for Case 3 first (auto-detect from filename)
+        detected_case3 = detect_case3_from_filename(filepaths, root)
+        if detected_case3:
+            measurement_case = detected_case3
+            print(f"Auto-detected measurement case from filename(s): {measurement_case}")
         # If Case 2 was selected, infer direction from filename(s)
-        if measurement_case == 'case2':
+        elif measurement_case == 'case2':
             final_measurement_case = infer_case2_direction(filepaths, root)
             if not final_measurement_case:
                 print("Failed to infer Case 2 direction. Exiting.")
