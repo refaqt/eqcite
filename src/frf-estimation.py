@@ -72,7 +72,7 @@ def get_system_parameters():
     
     # Low-pass filter parameters (for analysis visualization only)
     lowpass_filter = False  # Toggle to enable/disable low-pass filter for channels A0-A7
-    lowpass_bandwidth_hz = 10.0  # Low-pass filter bandwidth (Hz) for analysis plots
+    lowpass_bandwidth_hz = 100.0  # Low-pass filter bandwidth (Hz) for analysis plots
     
     # Window type parameters
     input_window_type = 'hann'  # Window type for input (force) signal: 'hann', 'exponential', 'raised-cosine', 'signal-based', or 'constant'
