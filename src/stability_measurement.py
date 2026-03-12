@@ -51,7 +51,7 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 
 # Spectrogram parameters
-DEFAULT_WINDOW_DURATION = 0.1  # Window duration in seconds (similar to live_frequency.py)
+DEFAULT_WINDOW_DURATION = 0.2  # Window duration in seconds (similar to live_frequency.py)
 DEFAULT_OVERLAP = 0.5  # Overlap fraction (0 to 1)
 DEFAULT_WINDOW_TYPE = 'hann'  # Window type for spectrogram
 
@@ -482,15 +482,15 @@ def process_stability_measurement(filepath, window_duration=DEFAULT_WINDOW_DURAT
         if use_wiener:
             print("Applying Wiener filter...")
             # Calculate noise power for each channel
-            noise_A0 = calculate_noise_power(original_signals['A0'], bias_idx_A0, actual_window_A0)
-            noise_A1 = calculate_noise_power(original_signals['A1'], bias_idx_A1, actual_window_A1)
-            noise_A2 = calculate_noise_power(original_signals['A2'], bias_idx_A2, actual_window_A2)
-            noise_A3 = calculate_noise_power(original_signals['A3'], bias_idx_A3, actual_window_A3)
-            noise_A4 = calculate_noise_power(original_signals['A4'], bias_idx_A4, actual_window_A4)
-            noise_A5 = calculate_noise_power(original_signals['A5'], bias_idx_A5, actual_window_A5)
-            noise_A6 = calculate_noise_power(original_signals['A6'], bias_idx_A6, actual_window_A6)
-            noise_A7 = calculate_noise_power(original_signals['A7'], bias_idx_A7, actual_window_A7)
-            
+            noise_A0 = max(calculate_noise_power(original_signals['A0'], bias_idx_A0, actual_window_A0), 1e-12)
+            noise_A1 = max(calculate_noise_power(original_signals['A1'], bias_idx_A1, actual_window_A1), 1e-12)
+            noise_A2 = max(calculate_noise_power(original_signals['A2'], bias_idx_A2, actual_window_A2), 1e-12)
+            noise_A3 = max(calculate_noise_power(original_signals['A3'], bias_idx_A3, actual_window_A3), 1e-12)
+            noise_A4 = max(calculate_noise_power(original_signals['A4'], bias_idx_A4, actual_window_A4), 1e-12)
+            noise_A5 = max(calculate_noise_power(original_signals['A5'], bias_idx_A5, actual_window_A5), 1e-12)
+            noise_A6 = max(calculate_noise_power(original_signals['A6'], bias_idx_A6, actual_window_A6), 1e-12)
+            noise_A7 = max(calculate_noise_power(original_signals['A7'], bias_idx_A7, actual_window_A7), 1e-12)
+
             # Apply Wiener filter
             A0 = apply_wiener_filter(A0, noise_A0, actual_window_A0)
             A1 = apply_wiener_filter(A1, noise_A1, actual_window_A1)

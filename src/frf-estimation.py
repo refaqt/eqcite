@@ -63,10 +63,10 @@ def get_system_parameters():
     bias_window_size = 1000  # Number of samples for bias estimation window
     
     # Wiener filter parameters
-    wiener_filter = False  # Toggle to enable/disable Wiener filter for channels A0-A7
+    wiener_filter = True  # Toggle to enable/disable Wiener filter for channels A0-A7
     
     # Savitzky-Golay filter parameters
-    savgol_filter = False  # Toggle to enable/disable Savitzky-Golay filter for channels A0-A7
+    savgol_filter = True  # Toggle to enable/disable Savitzky-Golay filter for channels A0-A7
     savgol_window_length = 10  # Window length for Savitzky-Golay filter (must be odd)
     savgol_polyorder = 2  # Polynomial order for Savitzky-Golay filter
     
@@ -596,7 +596,7 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measuremen
     elif measurement_case == 'case2_x':
         x = (-(A0 - A1 + A2 - A3) / np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2) - A4) * r_a
         y = ((A0 + A1 + A2 + A3) / np.sin(alpha) / 4 + theta_x * (L1 + L2 + L3 / 2)) * r_a
-        x_tool = (A5 - A4) * r_a
+        x_tool = (A7 * 5 - A4) * r_a
         result['x'] = x
         result['y'] = y
         result['x_tool'] = x_tool
@@ -3678,14 +3678,14 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
         
         if use_wiener:
             # Calculate noise power for each channel A0-A7 from bias window
-            noise_A0 = calculate_noise_power(original_A0, bias_idx_A0, actual_window_A0)
-            noise_A1 = calculate_noise_power(original_A1, bias_idx_A1, actual_window_A1)
-            noise_A2 = calculate_noise_power(original_A2, bias_idx_A2, actual_window_A2)
-            noise_A3 = calculate_noise_power(original_A3, bias_idx_A3, actual_window_A3)
-            noise_A4 = calculate_noise_power(original_A4, bias_idx_A4, actual_window_A4)
-            noise_A5 = calculate_noise_power(original_A5, bias_idx_A5, actual_window_A5)
-            noise_A6 = calculate_noise_power(original_A6, bias_idx_A6, actual_window_A6)
-            noise_A7 = calculate_noise_power(original_A7, bias_idx_A7, actual_window_A7)
+            noise_A0 = max(calculate_noise_power(original_A0, bias_idx_A0, actual_window_A0), 1e-12)
+            noise_A1 = max(calculate_noise_power(original_A1, bias_idx_A1, actual_window_A1), 1e-12)
+            noise_A2 = max(calculate_noise_power(original_A2, bias_idx_A2, actual_window_A2), 1e-12)
+            noise_A3 = max(calculate_noise_power(original_A3, bias_idx_A3, actual_window_A3), 1e-12)
+            noise_A4 = max(calculate_noise_power(original_A4, bias_idx_A4, actual_window_A4), 1e-12)
+            noise_A5 = max(calculate_noise_power(original_A5, bias_idx_A5, actual_window_A5), 1e-12)
+            noise_A6 = max(calculate_noise_power(original_A6, bias_idx_A6, actual_window_A6), 1e-12)
+            noise_A7 = max(calculate_noise_power(original_A7, bias_idx_A7, actual_window_A7), 1e-12)
             
             # Apply Wiener filter to A0-A7
             A0 = apply_wiener_filter(A0, noise_A0, actual_window_A0)
