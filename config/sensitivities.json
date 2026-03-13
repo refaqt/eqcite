@@ -1,0 +1,8 @@
+{
+  "//": "Global sensor sensitivities reused across experiments. Values in SI units.",
+  "a_5g": 49.05,
+  "a_50g": 245.25,
+  "F_1x": 400.0,
+  "F_10x": 40.0
+}
+

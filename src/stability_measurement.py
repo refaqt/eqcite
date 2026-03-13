@@ -12,24 +12,16 @@ Version: 1.0
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-import tkinter as tk
-from tkinter import filedialog, messagebox
 import os
 import sys
 import warnings
-import importlib.util
 import re
 from scipy.signal import ShortTimeFFT
 from scipy.signal.windows import hann
 
-# Import functions from frf-estimation.py
-# Use importlib to handle hyphenated module name
-spec = importlib.util.spec_from_file_location("frf_estimation", 
-                                               os.path.join(os.path.dirname(__file__), "frf-estimation.py"))
-frf_estimation = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(frf_estimation)
+from . import frf_estimation
 
-# Import required functions
+# Import required functions via the clean wrapper module
 load_csv_file = frf_estimation.load_csv_file
 get_system_parameters = frf_estimation.get_system_parameters
 remove_bias = frf_estimation.remove_bias
@@ -756,53 +748,6 @@ def process_stability_measurement(filepath, window_duration=DEFAULT_WINDOW_DURAT
         print(traceback.format_exc())
         raise Exception(error_msg) from e
 
-# =============================================================================
-# USER INTERFACE
-# =============================================================================
-
-def main():
-    """
-    Entry point with file dialog and user options.
-    """
-    # Create root window (hidden)
-    root = tk.Tk()
-    root.withdraw()
-    
-    try:
-        # File selection dialog
-        filepath = filedialog.askopenfilename(
-            title="Select CSV measurement file",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
-        )
-        
-        if not filepath:
-            print("No file selected. Exiting.")
-            return
-        
-        print(f"Selected file: {filepath}")
-        
-        # Process the file
-        result = process_stability_measurement(filepath, show_plot=True)
-        
-        print("\nProcessing completed successfully!")
-        print(f"Sample rate: {result['fs']:.0f} Hz")
-        print(f"Number of samples: {result['N']}")
-        print(f"Time duration: {result['time'][-1]:.3f} seconds")
-        
-        # Wait for user to close plots
-        plt.show()
-        
-    except Exception as e:
-        import traceback
-        error_msg = f"An error occurred: {str(e)}"
-        traceback_str = traceback.format_exc()
-        messagebox.showerror("Error", error_msg)
-        print(f"Error: {error_msg}")
-        print("\nFull traceback:")
-        print(traceback_str)
-    
-    finally:
-        root.destroy()
-
-if __name__ == "__main__":
-    main()
+#
+# Note: The tkinter-based CLI entry point has been deprecated.
+# Use process_stability_measurement from src/main.py or from a future GUI instead.
