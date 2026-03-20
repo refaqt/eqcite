@@ -3,7 +3,7 @@
 Mass-Spring-Damper System Simulator
 
 Simulates a hammer-excited mass-spring-damper system and generates test data
-compatible with frf-estimation.py. Produces CSV output files and visualization plots.
+compatible with frf_estimation.py. Produces CSV output files and visualization plots.
 
 Author: MSD System Simulator
 Version: 1.0
@@ -40,7 +40,7 @@ class SimulationParameters:
         # Geometric parameter
         self.alpha = 20.123 * np.pi / 180  # Angle (radians)
         
-        # Sensor calibration (from frf-estimation.py)
+        # Sensor calibration (from frf_estimation.py)
         self.r_u = 1 / (2.5e-3 * 10)  # Force sensitivity (N/V)
         self.r_a = 5 * 9.81 / 10    # Accelerometer sensitivity (m/s²/V)
     
@@ -221,7 +221,7 @@ def map_to_sensors(acceleration, force, params):
     r_u = params.r_u
     r_a = params.r_a
     # Convert acceleration to voltage (inverse of sensor calibration)
-    # From frf-estimation.py: r_a = 5 * 9.81 / 10 (m/s²/V)
+    # From frf_estimation.py: r_a = 5 * 9.81 / 10 (m/s²/V)
     x_volt = acceleration / r_a
     
     # Map to sensor channels

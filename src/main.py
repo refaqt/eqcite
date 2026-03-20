@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import numpy as np
+import matplotlib.pyplot as plt
 
 from . import load_data
 from . import frf_estimation
@@ -21,7 +22,7 @@ from . import stability_measurement  # type: ignore
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG = ROOT / "config" / "example_experiment_frf.json"
+DEFAULT_CONFIG = ROOT / "config" / "config_before_cabinet_assembly.json"
 DEFAULT_SENS = ROOT / "config" / "sensitivities.json"
 
 
@@ -40,20 +41,25 @@ def run_frf_pipeline(exp_cfg_path: Path, sens_path: Path) -> None:
     file_paths_x = [Path(p) for p in exp_cfg.get("file_paths_x", [])]
     file_paths_y = [Path(p) for p in exp_cfg.get("file_paths_y", [])]
 
-    for csv_path in file_paths_x + file_paths_y:
-        print(f"\n=== FRF analysis for {csv_path} ===")
+    pairs_x = exp_cfg.get("frf_pairs_x", exp_cfg.get("frf_pairs", []))
+    pairs_y = exp_cfg.get("frf_pairs_y", exp_cfg.get("frf_pairs", []))
+
+    # The current CLI is configured to create one combined plot from one x-file and one y-file.
+    x_plot_result: tuple[str, str, np.ndarray, np.ndarray] | None = None  # (input, output, f, H)
+    y_plot_result: tuple[str, str, np.ndarray, np.ndarray] | None = None  # (input, output, f, H)
+
+    for csv_path in file_paths_x:
+        print(f"\n=== FRF analysis for x file {csv_path} ===")
         data = load_data.load_measurement_file_with_config(csv_path, exp_cfg, sens)
 
-        time = data["time"]
-        results: Dict[str, Any] = {}
-
-        for pair in exp_cfg.get("frf_pairs", []):
+        time = np.asarray(data["time"])
+        for pair in pairs_x:
             input_name = pair["input"]
             output_name = pair["output"]
 
             if input_name not in data or output_name not in data:
                 print(
-                    f"Skipping pair {input_name}->{output_name}: "
+                    f"Skipping x pair {input_name}->{output_name}: "
                     f"signals not available in loaded data."
                 )
                 continue
@@ -62,22 +68,76 @@ def run_frf_pipeline(exp_cfg_path: Path, sens_path: Path) -> None:
             y = np.asarray(data[output_name])
 
             f, H = frf_estimation.compute_frf_from_signals(time, u, y, params)
-            results[(input_name, output_name)] = (f, H)
             print(
-                f"Computed FRF for {input_name} -> {output_name} "
-                f"over {len(f)} frequency bins."
+                f"Computed x FRF for {input_name} -> {output_name} over {len(f)} frequency bins."
             )
 
-        # Optional: plot Bode for first pair if legacy plotting is available
-        if results and frf_estimation.plot_bode_diagram is not None:
-            (inp, out), (f, H) = next(iter(results.items()))
-            print(f"Plotting Bode diagram for {inp}->{out} using legacy plotting...")
-            frf_estimation.plot_bode_diagram(
-                f,
-                H,
-                H,  # placeholder for Gy to keep signature simple
-                show_plot=True,
+            if x_plot_result is None:
+                x_plot_result = (input_name, output_name, f, H)
+        if x_plot_result is not None:
+            break  # analyze only first x file (matches current config intent)
+
+    for csv_path in file_paths_y:
+        print(f"\n=== FRF analysis for y file {csv_path} ===")
+        data = load_data.load_measurement_file_with_config(csv_path, exp_cfg, sens)
+
+        time = np.asarray(data["time"])
+        for pair in pairs_y:
+            input_name = pair["input"]
+            output_name = pair["output"]
+
+            if input_name not in data or output_name not in data:
+                print(
+                    f"Skipping y pair {input_name}->{output_name}: "
+                    f"signals not available in loaded data."
+                )
+                continue
+
+            u = np.asarray(data[input_name])
+            y = np.asarray(data[output_name])
+
+            f, H = frf_estimation.compute_frf_from_signals(time, u, y, params)
+            print(
+                f"Computed y FRF for {input_name} -> {output_name} over {len(f)} frequency bins."
             )
+
+            if y_plot_result is None:
+                y_plot_result = (input_name, output_name, f, H)
+        if y_plot_result is not None:
+            break  # analyze only first y file (matches current config intent)
+
+    if frf_estimation.plot_bode_diagram is None:
+        return
+    if x_plot_result is None or y_plot_result is None:
+        print("Skipping Bode plotting: missing x and/or y FRF results.")
+        return
+
+    (x_inp, x_out, f_x, H_x) = x_plot_result
+    (y_inp, y_out, f_y, H_y) = y_plot_result
+
+    # If the Welch frequency grids differ between x and y files, align y onto x.
+    if not np.allclose(f_x, f_y):
+        print("Warning: frequency grids differ between x and y FRFs; interpolating y onto x grid.")
+        H_y_interp = np.interp(f_x, f_y, np.real(H_y)) + 1j * np.interp(
+            f_x, f_y, np.imag(H_y)
+        )
+        f_plot = f_x
+        Hx_plot = H_x
+        Hy_plot = H_y_interp
+    else:
+        f_plot = f_x
+        Hx_plot = H_x
+        Hy_plot = H_y
+
+    print(f"Plotting combined Bode diagram for {x_inp}->{x_out} (x) and {y_inp}->{y_out} (y)...")
+    frf_estimation.plot_bode_diagram(
+        f_plot,
+        Hx_plot,
+        Hy_plot,
+        show_plot=True,
+    )
+    # `plot_bode_diagram()` does not call `plt.show()`, so we do it once here.
+    plt.show()
 
 
 def run_stability_pipeline(exp_cfg_path: Path, sens_path: Path) -> None:

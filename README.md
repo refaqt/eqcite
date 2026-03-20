@@ -7,7 +7,7 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 - `src/main.py`: main entry point that runs either the FRF pipeline (`analysis_type: "frf"`) or the stability pipeline (`analysis_type: "stability_measurement"`), based on the JSON config it loads.
 - `src/load_data.py`: measurement loading + channel/sensitivity mapping (used by the FRF pipeline).
 - `src/signal_processing.py`: CSV parsing and shared signal utilities (used by both pipelines).
-- `src/frf_estimation.py` + `src/frf-estimation.py` (legacy): FRF computation and plotting utilities.
+- `src/frf_estimation.py`: FRF computation and plotting utilities.
 - `src/stability_measurement.py`: stability pipeline (spectrograms + chatter detection + plotting).
 
 See also:
@@ -72,17 +72,24 @@ The FRF pipeline uses the JSON keys below (see `config/example_experiment_frf.js
 - `file_paths_x`, `file_paths_y`: lists of CSV paths to analyze
 - `channel_mapping`: maps **sensor names** to **analog channel indices** (`0`-based, expected to be present in `A0..A7`)
 - `sensitivity_mapping`: maps those same **sensor names** to keys in `config/sensitivities.json` (scalars applied as `raw_signal * sensitivity`)
-- `frf_pairs`: which FRFs to compute; each pair has:
+- `frf_pairs_x` (optional): which FRFs to compute from `file_paths_x`; each pair has:
+  - `input`: signal name expected to exist in the loaded data (commonly `F_x` / `F_y`)
+  - `output`: signal name expected to exist in the loaded data (commonly `x_tool` / `y_tool`)
+- `frf_pairs_y` (optional): which FRFs to compute from `file_paths_y`; each pair has:
+  - `input`: signal name expected to exist in the loaded data (commonly `F_x` / `F_y`)
+  - `output`: signal name expected to exist in the loaded data (commonly `x_tool` / `y_tool`)
+- `frf_pairs` (fallback): if `frf_pairs_x`/`frf_pairs_y` are not present, `frf_pairs` is used for both axes; each pair has:
   - `input`: signal name expected to exist in the loaded data (commonly `F_x` / `F_y`)
   - `output`: signal name expected to exist in the loaded data (commonly `x_tool` / `y_tool`)
 
 What you should expect while it runs:
 
-- It loads each CSV from `file_paths_x + file_paths_y`.
-- For each `frf_pair`, it computes `H(f)` (Welch CSD-based FRF) for that input/output pair.
+- It loads the first CSV from `file_paths_x` using `frf_pairs_x` (or `frf_pairs` as fallback) and computes the corresponding `H(f)` values.
+- It loads the first CSV from `file_paths_y` using `frf_pairs_y` (or `frf_pairs` as fallback) and computes the corresponding `H(f)` values.
+- It plots a combined Bode diagram for the x- and y-FRFs and calls `plt.show()` once so the plot windows appear.
 - If the required signals are missing from the loaded data, that pair is skipped with a message.
 - It prints how many frequency bins were computed.
-- It will plot a Bode diagram for the first computed pair (if the legacy plotting function is available).
+- It plots a combined Bode diagram using the first computed FRF pair from each axis.
 
 ### Stability measurement (`analysis_type: "stability_measurement"`)
 

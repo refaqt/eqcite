@@ -40,6 +40,18 @@
       "input": "F_y",
       "output": "y_tool"
     }
+  ],
+  "frf_pairs_x": [
+    {
+      "input": "F_x",
+      "output": "x_tool"
+    }
+  ],
+  "frf_pairs_y": [
+    {
+      "input": "F_y",
+      "output": "y_tool"
+    }
   ]
 }
 

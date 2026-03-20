@@ -12,8 +12,7 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 |------|------|
 | `src/` | Main Python package: pipelines, signal/FRF logic, stability analysis |
 | `src/main.py` | CLI-style entry: loads JSON experiment config, runs FRF or stability pipeline |
-| `src/frf_estimation.py` | Importable FRF API; wraps legacy `frf-estimation.py` via dynamic load |
-| `src/frf-estimation.py` | Legacy implementation (hyphenated filename; loaded by `frf_estimation`) |
+| `src/frf_estimation.py` | Canonical FRF computation and plotting utilities |
 | `src/load_data.py` | Measurement loading, sensitivities, config-driven column mapping |
 | `src/stability_measurement.py` | Stability measurement / spectrogram-style analysis on CSV cycles |
 | `src/stability_lobe_diagram.py` | Stability lobe diagram related logic (see module for current scope) |

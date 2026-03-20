@@ -28,3 +28,19 @@ Log errors, wrong approaches, and **prevention rules** so agents and humans do n
 **Fix applied:** Scanned `src/` for remaining `\"` artifacts, corrected the syntax in `src/signal_processing.py`, and reran `import src.main`.
 **Prevention rule:** When a SyntaxError points to escaped quoting artifacts, scan all `src/*.py` for the same pattern before rerunning.
 **Affected files:** `src/load_data.py`, `src/signal_processing.py`
+
+---
+## Stability smoke test used placeholder path — 2026-03-20
+**What happened:** I attempted to run `process_stability_measurement()` with a non-existent placeholder filepath (`echo`) and got a cascading file-not-found error.
+**Root cause:** Used an invalid test input when launching the smoke test command.
+**Fix applied:** Re-ran the stability smoke test using the real default CSV path from `config/config_before_cabinet_assembly.json`.
+**Prevention rule:** For pipeline smoke tests, always use a real filepath from the active config (or a known-good small fixture).
+**Affected files:** `src/stability_measurement.py`, `src/frf_estimation.py`
+
+---
+## Stability smoke test window_duration too large — 2026-03-20
+**What happened:** I ran the stability smoke test with `window_duration=1.0` on a file that only contained ~0.25s of data (5000 samples at 20kHz), causing `negative dimensions are not allowed` inside the rolling-window computation.
+**Root cause:** Rolling-window code computed an invalid number of windows because the requested window length exceeded the available signal duration.
+**Fix applied:** Re-ran the stability smoke test with `window_duration=0.2` (and `show_plot=False`), which completed successfully.
+**Prevention rule:** When running stability/rolling-window code, ensure `window_duration` is small enough relative to the data duration (`len(time)/fs`) to keep the computed window count non-negative.
+**Affected files:** `src/stability_measurement.py`
