@@ -2,3 +2,13 @@
 *.png
 *.WDH
 *.CSV
+
+# Python virtual environments
+/venv/
+/.venv/
+/.venv1/
+
+# Python cache / bytecode
+__pycache__/
+*.pyc
+*.pyo

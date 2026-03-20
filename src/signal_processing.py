@@ -26,25 +26,25 @@ def parse_sample_rate_from_header(filepath: str) -> float:
     """
     Parse sample rate from CSV file header.
 
-    The header contains a line like \"Samples per sec. = 56000/1\" where the number
+    The header contains a line like "Samples per sec. = 56000/1" where the number
     is the total samples per second for all channels combined.
     """
     if not os.path.exists(filepath):
-        raise FileNotFoundError(f\"File not found: {filepath}\")
+        raise FileNotFoundError(f"File not found: {filepath}")
 
     try:
-        with open(filepath, \"r\") as f:
+        with open(filepath, "r") as f:
             first_line = f.readline()
     except Exception as e:  # pragma: no cover - defensive
-        raise ValueError(f\"Error reading CSV file header: {e}\")
+        raise ValueError(f"Error reading CSV file header: {e}")
 
-    pattern = r\"Samples\\s+per\\s+sec\\.\\s*=\\s*(\\d+)/\\d+\"
+    pattern = r"Samples\s+per\s+sec\.\s*=\s*(\d+)/\d+"
     match = re.search(pattern, first_line, re.IGNORECASE)
     if not match:
         raise ValueError(
-            \"Could not find sample rate in CSV header. \"  # noqa: E501
-            \"Expected format: 'Samples per sec. = XXXXX/1'. \"  # noqa: E501
-            f\"First line: {first_line.strip()}\"
+            "Could not find sample rate in CSV header. "  # noqa: E501
+            "Expected format: 'Samples per sec. = XXXXX/1'. "  # noqa: E501
+            f"First line: {first_line.strip()}"
         )
 
     return float(match.group(1))
@@ -60,7 +60,7 @@ def load_csv_file(filepath: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np
     only contains 7 analog channels.
     """
     if not os.path.exists(filepath):
-        raise FileNotFoundError(f\"File not found: {filepath}\")
+        raise FileNotFoundError(f"File not found: {filepath}")
 
     total_samples_per_sec = parse_sample_rate_from_header(filepath)
 
@@ -68,29 +68,29 @@ def load_csv_file(filepath: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np
         filepath,
         skiprows=5,
         header=None,
-        sep=\",\",
-        decimal=\".\",
+        sep=",",
+        decimal=".",
         skipinitialspace=True,
     )
 
     n_cols = df.shape[1]
     if n_cols < 8 or n_cols > 9:
         raise ValueError(
-            f\"Expected 8 or 9 columns (Time + A0–A6 [+ optional A7]), found {n_cols}\"
+            f"Expected 8 or 9 columns (Time + A0–A6 [+ optional A7]), found {n_cols}"
         )
 
     num_data_channels = n_cols - 1
     fs = total_samples_per_sec / num_data_channels
     dt = 1.0 / fs
 
-    column_names = [\"Time\", \"A0\", \"A1\", \"A2\", \"A3\", \"A4\", \"A5\", \"A6\", \"A7\"]
+    column_names = ["Time", "A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7"]
 
     for i, _ in enumerate(column_names):
         if i >= df.shape[1]:
             continue
-        df.iloc[:, i] = pd.to_numeric(df.iloc[:, i], errors=\"coerce\")
+        df.iloc[:, i] = pd.to_numeric(df.iloc[:, i], errors="coerce")
 
-    df = df.dropna(how=\"any\")
+    df = df.dropna(how="any")
 
     time = df.iloc[:, 0].to_numpy()
 
@@ -125,7 +125,7 @@ def remove_bias(signal_data: np.ndarray, window_size: int) -> np.ndarray:
         return data
 
     kernel = np.ones(window_size) / window_size
-    bias = np.convolve(data, kernel, mode=\"same\")
+    bias = np.convolve(data, kernel, mode="same")
     return data - bias
 
 
@@ -220,7 +220,7 @@ def apply_lowpass_filter(
         return data
 
     wn = cutoff_hz / (fs / 2.0)
-    b, a = signal.butter(order, wn, btype=\"low\", analog=False)
+    b, a = signal.butter(order, wn, btype="low", analog=False)
     return signal.filtfilt(b, a, data)
 
 
@@ -243,11 +243,11 @@ def create_raised_cosine_window(
     force_signal = np.asarray(force_signal)
 
     if time.shape != force_signal.shape:
-        raise ValueError(\"Time and force_signal must have the same shape for windowing\")
+        raise ValueError("Time and force_signal must have the same shape for windowing")
     if time.ndim != 1 or len(time) < 2:
-        raise ValueError(\"Time array must be one-dimensional with at least two samples\")
+        raise ValueError("Time array must be one-dimensional with at least two samples")
     if not np.isfinite(dt) or dt <= 0:
-        raise ValueError(\"Non-positive or non-finite sample interval detected\")
+        raise ValueError("Non-positive or non-finite sample interval detected")
 
     peak_idx = int(np.argmax(np.abs(force_signal)))
     peak_time = time[peak_idx]
@@ -263,26 +263,26 @@ def create_raised_cosine_window(
         window = np.zeros_like(time, dtype=float)
         window[peak_idx] = 1.0
         return window, {
-            \"peak_time\": peak_time,
-            \"start_time\": peak_time,
-            \"end_time\": peak_time,
-            \"peak_index\": peak_idx,
-            \"start_index\": peak_idx,
-            \"end_index\": peak_idx + 1,
+            "peak_time": peak_time,
+            "start_time": peak_time,
+            "end_time": peak_time,
+            "peak_index": peak_idx,
+            "start_index": peak_idx,
+            "end_index": peak_idx + 1,
         }
 
-    start_idx = int(np.searchsorted(time, start_time, side=\"left\"))
-    end_idx = int(np.searchsorted(time, end_time, side=\"right\"))
+    start_idx = int(np.searchsorted(time, start_time, side="left"))
+    end_idx = int(np.searchsorted(time, end_time, side="right"))
     if end_idx <= start_idx + 1:
         window = np.zeros_like(time, dtype=float)
         window[peak_idx] = 1.0
         return window, {
-            \"peak_time\": peak_time,
-            \"start_time\": peak_time,
-            \"end_time\": peak_time,
-            \"peak_index\": peak_idx,
-            \"start_index\": peak_idx,
-            \"end_index\": peak_idx + 1,
+            "peak_time": peak_time,
+            "start_time": peak_time,
+            "end_time": peak_time,
+            "peak_index": peak_idx,
+            "start_index": peak_idx,
+            "end_index": peak_idx + 1,
         }
 
     segment_length = end_idx - start_idx
@@ -292,12 +292,12 @@ def create_raised_cosine_window(
     window[start_idx:end_idx] = tukey_segment
 
     metadata = {
-        \"peak_time\": peak_time,
-        \"start_time\": time[start_idx],
-        \"end_time\": time[end_idx - 1],
-        \"peak_index\": peak_idx,
-        \"start_index\": start_idx,
-        \"end_index\": end_idx,
+        "peak_time": peak_time,
+        "start_time": time[start_idx],
+        "end_time": time[end_idx - 1],
+        "peak_index": peak_idx,
+        "start_index": start_idx,
+        "end_index": end_idx,
     }
     return window, metadata
 
@@ -315,8 +315,8 @@ def create_hann_window(time: np.ndarray, center_time: float, width_seconds: floa
     start_time = center_time - half_width
     end_time = center_time + half_width
 
-    start_idx = int(np.searchsorted(time, start_time, side=\"left\"))
-    end_idx = int(np.searchsorted(time, end_time, side=\"right\"))
+    start_idx = int(np.searchsorted(time, start_time, side="left"))
+    end_idx = int(np.searchsorted(time, end_time, side="right"))
     start_idx = max(0, min(start_idx, n - 1))
     end_idx = max(start_idx + 1, min(end_idx, n))
 
@@ -345,34 +345,34 @@ def create_window(
     """
     time = np.asarray(time)
     force = np.asarray(force)
-    win_type = (window_type or \"hann\").lower()
+    win_type = (window_type or "hann").lower()
 
-    if win_type == \"raised-cosine\":
+    if win_type == "raised-cosine":
         return create_raised_cosine_window(
             time,
             force,
-            params.get(\"window_pre_seconds\", 0.05),
-            params.get(\"window_post_seconds\", 0.1),
-            params.get(\"window_beta\", 0.25),
+            params.get("window_pre_seconds", 0.05),
+            params.get("window_post_seconds", 0.1),
+            params.get("window_beta", 0.25),
             dt,
         )
-    if win_type == \"constant\":
+    if win_type == "constant":
         w = create_constant_window(time)
         return w, {
-            \"peak_time\": float(time[len(time) // 2]) if len(time) else 0.0,
-            \"start_time\": float(time[0]) if len(time) else 0.0,
-            \"end_time\": float(time[-1]) if len(time) else 0.0,
+            "peak_time": float(time[len(time) // 2]) if len(time) else 0.0,
+            "start_time": float(time[0]) if len(time) else 0.0,
+            "end_time": float(time[-1]) if len(time) else 0.0,
         }
 
     # Default: Hann around the hammer event (centered at max |force|)
     peak_idx = int(np.argmax(np.abs(force))) if len(force) else 0
     center_time = float(time[peak_idx]) if len(time) else 0.0
-    width = params.get(\"window_hann_width\", 0.05)
+    width = params.get("window_hann_width", 0.05)
     w = create_hann_window(time, center_time, width)
     meta = {
-        \"peak_time\": center_time,
-        \"start_time\": float(time[0]) if len(time) else 0.0,
-        \"end_time\": float(time[-1]) if len(time) else 0.0,
+        "peak_time": center_time,
+        "start_time": float(time[0]) if len(time) else 0.0,
+        "end_time": float(time[-1]) if len(time) else 0.0,
     }
     return w, meta
 
