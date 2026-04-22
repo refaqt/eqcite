@@ -13,8 +13,6 @@ Version: 1.0
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-import tkinter as tk
-from tkinter import filedialog, messagebox
 import re
 import os
 from pathlib import Path
@@ -22,6 +20,7 @@ import warnings
 from scipy import signal
 from pyFRF import FRF
 import sys
+from typing import Any, Dict, Optional, Tuple
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
@@ -63,16 +62,16 @@ def get_system_parameters():
     bias_window_size = 1000  # Number of samples for bias estimation window
     
     # Wiener filter parameters
-    wiener_filter = False  # Toggle to enable/disable Wiener filter for channels A0-A7
+    wiener_filter = True  # Toggle to enable/disable Wiener filter for channels A0-A7
     
     # Savitzky-Golay filter parameters
-    savgol_filter = False  # Toggle to enable/disable Savitzky-Golay filter for channels A0-A7
+    savgol_filter = True  # Toggle to enable/disable Savitzky-Golay filter for channels A0-A7
     savgol_window_length = 10  # Window length for Savitzky-Golay filter (must be odd)
     savgol_polyorder = 2  # Polynomial order for Savitzky-Golay filter
     
     # Low-pass filter parameters (for analysis visualization only)
     lowpass_filter = False  # Toggle to enable/disable low-pass filter for channels A0-A7
-    lowpass_bandwidth_hz = 10.0  # Low-pass filter bandwidth (Hz) for analysis plots
+    lowpass_bandwidth_hz = 100.0  # Low-pass filter bandwidth (Hz) for analysis plots
     
     # Window type parameters
     input_window_type = 'hann'  # Window type for input (force) signal: 'hann', 'exponential', 'raised-cosine', 'signal-based', or 'constant'
@@ -137,6 +136,65 @@ def get_system_parameters():
         'welch_window': welch_window,
         'estimator_type': estimator_type
     }
+
+# =============================================================================
+# FRF (single-input/single-output) helper
+# =============================================================================
+def compute_frf_from_signals(
+    time: np.ndarray,
+    input_signal: np.ndarray,
+    output_signal: np.ndarray,
+    params: Optional[Dict[str, Any]] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute FRF H(f) = YU* / UU* using Welch CSD.
+
+    Returns:
+        (frequencies, H) where H is complex-valued.
+    """
+    time = np.asarray(time)
+    u = np.asarray(input_signal, dtype=float)
+    y = np.asarray(output_signal, dtype=float)
+
+    if len(time) < 2:
+        raise ValueError("Time vector must contain at least two samples")
+
+    dt = float(time[1] - time[0])
+    fs = 1.0 / dt
+
+    if params is None:
+        params = get_system_parameters()
+
+    nperseg = int(params.get("welch_nperseg", 2048))
+    # Clamp Welch settings to valid ranges for short signals (common in simulations/smoke tests).
+    nperseg = max(2, min(nperseg, len(u), len(y)))
+    noverlap = int(params.get("welch_noverlap", nperseg // 2))
+    noverlap = max(0, min(noverlap, nperseg - 1))
+    window = params.get("welch_window", "hamming")
+
+    f, Puy = signal.csd(
+        u,
+        y,
+        fs=fs,
+        nperseg=nperseg,
+        noverlap=noverlap,
+        window=window,
+    )
+    f2, Puu = signal.csd(
+        u,
+        u,
+        fs=fs,
+        nperseg=nperseg,
+        noverlap=noverlap,
+        window=window,
+    )
+
+    if not np.allclose(f, f2):
+        raise RuntimeError("Frequency grids from CSD calculations do not match")
+
+    # Avoid division by exactly 0 (or extremely tiny values due to numerical noise)
+    H = Puy / (Puu + 1e-20)
+    return f, H
 
 # =============================================================================
 # DATA LOADING FUNCTIONS
@@ -548,7 +606,7 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measuremen
     params : dict
         System parameters dictionary
     measurement_case : str
-        Measurement case identifier: 'case1', 'case2_x', or 'case2_y'
+        Measurement case identifier: 'case1', 'case2_x', 'case2_y', or 'case3'
         
     Returns:
     --------
@@ -560,6 +618,7 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measuremen
         theta_y : Angular displacement about Y-axis (rad)
         x_tool : X-direction tool acceleration (m/s²) - only for case2_x
         y_tool : Y-direction tool acceleration (m/s²) - only for case2_y
+        z : Z-direction acceleration (m/s²) - only for case3
     """
     # Extract parameters
     L1 = params['L1']
@@ -583,6 +642,7 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measuremen
         'theta_y': theta_y
     }
     
+
     # Case 1: Accelerometers only on z-slide (original equations)
     if measurement_case == 'case1':
         x = (-(A0 - A1 + A2 - A3) / np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2) - A4) * r_a
@@ -594,7 +654,7 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measuremen
     elif measurement_case == 'case2_x':
         x = (-(A0 - A1 + A2 - A3) / np.cos(alpha) / 4 - theta_y * (L1 + L2 + L3 / 2) - A4) * r_a
         y = ((A0 + A1 + A2 + A3) / np.sin(alpha) / 4 + theta_x * (L1 + L2 + L3 / 2)) * r_a
-        x_tool = (A5 - A4) * r_a
+        x_tool = (A7 * 5 - A4) * r_a
         result['x'] = x
         result['y'] = y
         result['x_tool'] = x_tool
@@ -607,6 +667,21 @@ def calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measuremen
         result['x'] = x
         result['y'] = y
         result['y_tool'] = y_tool
+    
+    # Case 3: XYZ measurement case
+    elif measurement_case == 'case3':
+        # Convert angles from degrees to radians
+        alpha1 = 57.1715 * np.pi / 180  # radians
+        beta1 = 76.8368 * np.pi / 180   # radians
+        beta2 = 85.2045 * np.pi / 180   # radians
+        
+        x = ((A3 - A2) / np.cos(alpha1) - A4) * r_a
+        y = ((A2 + A3) / np.cos(beta1) - A5) * r_a
+        # Note: y already has r_a applied, so divide by r_a before using in z calculation
+        z = ((A0 - (y / r_a + A5) * np.cos(beta2)) / np.cos(np.pi / 2 - beta2)) * r_a
+        result['x'] = x
+        result['y'] = y
+        result['z'] = z
     
     else:
         raise ValueError(f"Unknown measurement case: {measurement_case}")
@@ -2042,10 +2117,10 @@ def plot_savgol_filtered_signals(time, raw_signals, savgol_filtered_signals, win
     plt.tight_layout()
     # Do not call plt.show() here; show all figures once at the end.
 
-def plot_time_domain_signals(time, u, x, y, show_plot=True, windows=None, tool_accel=None, tool_label=None):
+def plot_time_domain_signals(time, u, x, y, show_plot=True, windows=None, tool_accel=None, tool_label=None, z_accel=None):
     """
     Plot time-domain signals u, x, y in a single figure with synchronized x-axes.
-    Optionally includes tool acceleration signal as 4th subplot.
+    Optionally includes z acceleration signal as 4th subplot and tool acceleration signal as 5th subplot.
     Each signal can have its own window overlay.
     
     Parameters:
@@ -2062,18 +2137,24 @@ def plot_time_domain_signals(time, u, x, y, show_plot=True, windows=None, tool_a
         Whether to display the plot
     windows : dict, optional
         Dictionary of window functions to overlay on plots.
-        Keys: 'u', 'x', 'y', 'tool' (optional)
+        Keys: 'u', 'x', 'y', 'z', 'tool' (optional)
         Values: window arrays matching time length
     tool_accel : array_like, optional
         Tool acceleration signal (m/s²) - x_tool or y_tool
     tool_label : str, optional
         Label for tool acceleration (e.g., 'x_tool' or 'y_tool')
+    z_accel : array_like, optional
+        Z-direction acceleration signal (m/s²) - only for case3
     """
     if not show_plot:
         return
     
     # Determine number of subplots
-    n_plots = 4 if tool_accel is not None else 3
+    n_plots = 3
+    if z_accel is not None:
+        n_plots += 1
+    if tool_accel is not None:
+        n_plots += 1
     fig, axes = plt.subplots(n_plots, 1, figsize=(12, 10 + 2.5 * (n_plots - 3)), sharex=True)
     
     # Plot force u
@@ -2112,22 +2193,43 @@ def plot_time_domain_signals(time, u, x, y, show_plot=True, windows=None, tool_a
         axes[2].plot(time, window_y * scale, 'k--', linewidth=1, label='Window')
         axes[2].legend(fontsize=8)
     
+    # Track current axis index
+    current_axis = 3
+    
+    # Plot z acceleration if provided (before tool)
+    if z_accel is not None:
+        axes[current_axis].plot(time, z_accel, 'c-', linewidth=1, label='z (windowed)')
+        axes[current_axis].set_ylabel('Acceleration (m/s²)')
+        axes[current_axis].set_title('Z-Direction Acceleration z(t)')
+        axes[current_axis].grid(True, alpha=0.3)
+        if windows is not None and 'z' in windows:
+            window_z = windows['z']
+            scale = np.max(np.abs(z_accel))
+            scale = scale if scale > 0 else 1.0
+            axes[current_axis].plot(time, window_z * scale, 'k--', linewidth=1, label='Window')
+            axes[current_axis].legend(fontsize=8)
+        current_axis += 1
+    
     # Plot tool acceleration if provided
     if tool_accel is not None:
-        axes[3].plot(time, tool_accel, 'm-', linewidth=1, label=f'{tool_label} (windowed)')
-        axes[3].set_xlabel('Time (s)')
-        axes[3].set_ylabel('Acceleration (m/s²)')
+        axes[current_axis].plot(time, tool_accel, 'm-', linewidth=1, label=f'{tool_label} (windowed)')
+        axes[current_axis].set_xlabel('Time (s)')
+        axes[current_axis].set_ylabel('Acceleration (m/s²)')
         title_label = tool_label.replace('_', ' ').title() if tool_label else 'Tool Acceleration'
-        axes[3].set_title(f'Tool Acceleration {title_label}(t)')
-        axes[3].grid(True, alpha=0.3)
+        axes[current_axis].set_title(f'Tool Acceleration {title_label}(t)')
+        axes[current_axis].grid(True, alpha=0.3)
         if windows is not None and 'tool' in windows:
             window_tool = windows['tool']
             scale = np.max(np.abs(tool_accel))
             scale = scale if scale > 0 else 1.0
-            axes[3].plot(time, window_tool * scale, 'k--', linewidth=1, label='Window')
-            axes[3].legend(fontsize=8)
+            axes[current_axis].plot(time, window_tool * scale, 'k--', linewidth=1, label='Window')
+            axes[current_axis].legend(fontsize=8)
     else:
-        axes[2].set_xlabel('Time (s)')
+        # Set xlabel on the last plotted axis
+        if z_accel is not None:
+            axes[current_axis - 1].set_xlabel('Time (s)')
+        else:
+            axes[2].set_xlabel('Time (s)')
     
     plt.tight_layout()
     # Do not call plt.show() here; show all figures once at the end.
@@ -3008,7 +3110,7 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
     filepaths : list
         List of paths to input CSV files
     measurement_case : str
-        Measurement case identifier: 'case1', 'case2_x', or 'case2_y'
+        Measurement case identifier: 'case1', 'case2_x', 'case2_y', or 'case3'
     show_plot : bool
         Whether to display plots (controlled by show_all_figures for which plots)
     save_files : bool
@@ -3018,6 +3120,7 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
     --------
     dict : Contains frequencies, Gx, Gy, and metadata
         Optionally includes G_tool for Case 2
+        Note: For case3, z signal is calculated but not included in FRF analysis
     """
     try:
         # Load system parameters
@@ -3179,6 +3282,20 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
                 dt,
                 window_type=output_window_type
             )
+            
+            # Extract z signal if present (case3) and create its window (output window)
+            z_signal = None
+            if measurement_case == 'case3':
+                z_signal = signals.get('z', None)
+                if z_signal is not None:
+                    window_z, _ = create_window(
+                        z_signal,
+                        time,
+                        params,
+                        dt,
+                        window_type=output_window_type
+                    )
+                    z_signal = z_signal * window_z
             
             # Extract tool signal if present and create its window (output window)
             tool_signal = None
@@ -3558,7 +3675,7 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
     filepath : str
         Path to input CSV file
     measurement_case : str
-        Measurement case identifier: 'case1', 'case2_x', or 'case2_y'
+        Measurement case identifier: 'case1', 'case2_x', 'case2_y', or 'case3'
     show_plot : bool
         Whether to display Bode plots
     save_files : bool
@@ -3568,6 +3685,7 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
     --------
     dict : Contains frequencies, Gx, Gy, and metadata
         Optionally includes G_tool for Case 2
+        Note: For case3, z signal is calculated but not included in FRF analysis
     """
     try:
         # Load system parameters
@@ -3618,14 +3736,14 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
         
         if use_wiener:
             # Calculate noise power for each channel A0-A7 from bias window
-            noise_A0 = calculate_noise_power(original_A0, bias_idx_A0, actual_window_A0)
-            noise_A1 = calculate_noise_power(original_A1, bias_idx_A1, actual_window_A1)
-            noise_A2 = calculate_noise_power(original_A2, bias_idx_A2, actual_window_A2)
-            noise_A3 = calculate_noise_power(original_A3, bias_idx_A3, actual_window_A3)
-            noise_A4 = calculate_noise_power(original_A4, bias_idx_A4, actual_window_A4)
-            noise_A5 = calculate_noise_power(original_A5, bias_idx_A5, actual_window_A5)
-            noise_A6 = calculate_noise_power(original_A6, bias_idx_A6, actual_window_A6)
-            noise_A7 = calculate_noise_power(original_A7, bias_idx_A7, actual_window_A7)
+            noise_A0 = max(calculate_noise_power(original_A0, bias_idx_A0, actual_window_A0), 1e-12)
+            noise_A1 = max(calculate_noise_power(original_A1, bias_idx_A1, actual_window_A1), 1e-12)
+            noise_A2 = max(calculate_noise_power(original_A2, bias_idx_A2, actual_window_A2), 1e-12)
+            noise_A3 = max(calculate_noise_power(original_A3, bias_idx_A3, actual_window_A3), 1e-12)
+            noise_A4 = max(calculate_noise_power(original_A4, bias_idx_A4, actual_window_A4), 1e-12)
+            noise_A5 = max(calculate_noise_power(original_A5, bias_idx_A5, actual_window_A5), 1e-12)
+            noise_A6 = max(calculate_noise_power(original_A6, bias_idx_A6, actual_window_A6), 1e-12)
+            noise_A7 = max(calculate_noise_power(original_A7, bias_idx_A7, actual_window_A7), 1e-12)
             
             # Apply Wiener filter to A0-A7
             A0 = apply_wiener_filter(A0, noise_A0, actual_window_A0)
@@ -3770,6 +3888,22 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
             window_type=output_window_type
         )
         
+        # Extract z signal if present (case3) and create its window (output window)
+        z_signal = None
+        window_z = None
+        window_metadata_z = None
+        if measurement_case == 'case3':
+            z_signal = signals.get('z', None)
+            if z_signal is not None:
+                window_z, window_metadata_z = create_window(
+                    z_signal,
+                    time,
+                    params,
+                    dt,
+                    window_type=output_window_type
+                )
+                z_signal = z_signal * window_z
+        
         # Extract tool signal if present and create its window (output window)
         tool_signal = None
         tool_label = None
@@ -3815,6 +3949,8 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
             'x': window_x,
             'y': window_y
         }
+        if window_z is not None:
+            windows_dict['z'] = window_z
         if window_tool is not None:
             windows_dict['tool'] = window_tool
         
@@ -3822,7 +3958,8 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
         if show_all_figures:
             plot_time_domain_signals(time, windowed_signals['u'], windowed_signals['x'], 
                                     windowed_signals['y'], show_plot, windows=windows_dict,
-                                    tool_accel=tool_signal, tool_label=tool_label)
+                                    tool_accel=tool_signal, tool_label=tool_label,
+                                    z_accel=z_signal)
         
         # Perform frequency domain analysis using pyFRF
         fft_results = perform_pyfrf_analysis(time, windowed_signals['u'], windowed_signals['x'], 
@@ -3928,6 +4065,10 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
             }
         }
         
+        # Add z window metadata if present
+        if window_metadata_z is not None:
+            result['window_metadata']['z'] = window_metadata_z
+        
         # Add tool window metadata if present
         if window_metadata_tool is not None:
             result['window_metadata']['tool'] = window_metadata_tool
@@ -3950,75 +4091,11 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
 
 def select_measurement_case(root=None):
     """
-    Display dialog for user to select measurement case.
-    
-    Parameters:
-    -----------
-    root : tk.Tk, optional
-        Root window to use. If None, creates a new root window.
-    
-    Returns:
-    --------
-    str : Case identifier ('case1' or 'case2')
-        Returns None if user cancels
-        Note: For 'case2', the direction (x/y) will be inferred from filename later
+    Deprecated: interactive measurement-case selection.
     """
-    # Use provided root or create new one
-    created_root = False
-    if root is None:
-        root = tk.Tk()
-        root.withdraw()  # Hide root window if we created it
-        created_root = True
-    
-    # Create dialog window
-    dialog = tk.Toplevel(root)
-    dialog.title("Select Measurement Case")
-    dialog.geometry("400x200")
-    
-    # Make dialog modal
-    dialog.grab_set()
-    
-    # Bring dialog to front and give it focus
-    dialog.lift()
-    dialog.focus_force()
-    
-    # Update root to ensure dialog is rendered
-    root.update()
-    
-    # Variable to store result
-    result = [None]
-    
-    def select_case1():
-        result[0] = 'case1'
-        dialog.destroy()
-    
-    def select_case2():
-        result[0] = 'case2'
-        dialog.destroy()
-    
-    # Main dialog content
-    tk.Label(dialog, text="Select measurement case:", 
-            font=("Arial", 12, "bold")).pack(pady=15)
-    
-    btn_case1 = tk.Button(dialog, text="Case 1: Accelerometers only on z-slide", 
-                         command=select_case1, width=35, height=2)
-    btn_case1.pack(pady=10)
-    
-    btn_case2 = tk.Button(dialog, text="Case 2: Accelerometer at tool", 
-                         command=select_case2, width=35, height=2)
-    btn_case2.pack(pady=10)
-    
-    # Update to ensure dialog content is visible
-    root.update()
-    
-    # Wait for dialog to close
-    dialog.wait_window()
-    
-    # Only destroy root if we created it
-    if created_root:
-        root.destroy()
-    
-    return result[0]
+    raise RuntimeError(
+        "Interactive selection has been removed. Configure analysis via JSON and run src/main.py."
+    )
 
 def infer_case2_direction(filepaths, root=None):
     """
@@ -4028,8 +4105,8 @@ def infer_case2_direction(filepaths, root=None):
     -----------
     filepaths : list
         List of file paths to analyze
-    root : tk.Tk, optional
-        Root window for error dialogs. If None, creates a temporary one.
+    root : Any, optional
+        Deprecated legacy argument (no longer used for dialogs).
     
     Returns:
     --------
@@ -4056,10 +4133,7 @@ def infer_case2_direction(filepaths, root=None):
         except Exception as e:
             # If parsing fails, show error and return None
             error_msg = f"Error parsing filename: {str(e)}\n\nFile: {os.path.basename(filepath)}"
-            if root is not None:
-                messagebox.showerror("File Parsing Error", error_msg)
-            else:
-                print(f"Error: {error_msg}")
+            print(f"Error: {error_msg}")
             return None
     
     # Check if all directions are the same
@@ -4071,15 +4145,61 @@ def infer_case2_direction(filepaths, root=None):
             "Files selected:\n" + "\n".join([f"  - {os.path.basename(fp)} ({d})" 
                                             for fp, d in zip(filepaths, directions)])
         )
-        if root is not None:
-            messagebox.showerror("Mixed Directions Error", error_msg)
-        else:
-            print(f"Error: {error_msg}")
+        print(f"Error: {error_msg}")
         return None
     
     # All files have the same direction
     direction = directions[0]
     return f'case2_{direction}'
+
+def detect_case3_from_filename(filepaths, root=None):
+    """
+    Detect Case 3 from selected file(s) based on "XYZ" appearing in filename.
+    
+    Parameters:
+    -----------
+    filepaths : list
+        List of file paths to analyze
+    root : Any, optional
+        Deprecated legacy argument (no longer used for dialogs).
+    
+    Returns:
+    --------
+    str : 'case3' if detected, None otherwise
+    
+    Raises:
+    -------
+    ValueError : If files have mixed cases (some with "XYZ", some without)
+    """
+    if not filepaths:
+        return None
+    
+    has_xyz = []
+    
+    # Check each file for "XYZ" in filename (case-insensitive)
+    for filepath in filepaths:
+        filename = os.path.basename(filepath)
+        has_xyz.append('xyz' in filename.lower())
+    
+    # Check if all files have the same case
+    if len(set(has_xyz)) > 1:
+        # Mixed cases - show error
+        xyz_files = [fp for fp, has in zip(filepaths, has_xyz) if has]
+        non_xyz_files = [fp for fp, has in zip(filepaths, has_xyz) if not has]
+        error_msg = (
+            "Selected files have mixed measurement cases.\n\n"
+            "Some files contain 'XYZ' in filename (Case 3), while others do not.\n\n"
+            "Files with 'XYZ':\n" + "\n".join([f"  - {os.path.basename(fp)}" for fp in xyz_files]) + "\n\n"
+            "Files without 'XYZ':\n" + "\n".join([f"  - {os.path.basename(fp)}" for fp in non_xyz_files])
+        )
+        print(f"Error: {error_msg}")
+        return None
+    
+    # All files have the same case - return 'case3' if all have XYZ, None otherwise
+    if all(has_xyz):
+        return 'case3'
+    else:
+        return None
 
 def wait_for_quit_and_close_plots():
     """
@@ -4094,144 +4214,13 @@ def wait_for_quit_and_close_plots():
 
     plt.show()
 
-def main():
+def main() -> None:
     """
-    Entry point with file dialog and user options.
-    """
-    # Create root window (hidden)
-    root = tk.Tk()
-    root.withdraw()
-    
-    try:
-        # Select measurement case before file selection
-        measurement_case = select_measurement_case(root)
-        
-        if not measurement_case:
-            print("No measurement case selected. Exiting.")
-            return
-        
-        print(f"Selected measurement case: {measurement_case}")
-        
-        # File selection dialog (allows multiple selection)
-        filepaths = filedialog.askopenfilenames(
-            title="Select CSV measurement file(s)",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
-        )
-        
-        if not filepaths:
-            print("No file selected. Exiting.")
-            return
-        
-        # Convert tuple to list
-        filepaths = list(filepaths)
-        
-        # If Case 2 was selected, infer direction from filename(s)
-        if measurement_case == 'case2':
-            final_measurement_case = infer_case2_direction(filepaths, root)
-            if not final_measurement_case:
-                print("Failed to infer Case 2 direction. Exiting.")
-                return
-            measurement_case = final_measurement_case
-            print(f"Inferred measurement case from filename(s): {measurement_case}")
-        
-        # Determine if single or multiple files
-        if len(filepaths) == 1:
-            # Single file: use existing process_measurement_file (no averaging)
-            filepath = filepaths[0]
-            print(f"Processing single file: {filepath}")
-            
-            # Process the file (always show plots, don't save yet)
-            result = process_measurement_file(filepath, measurement_case=measurement_case, show_plot=True, save_files=False)
-            
-            # Display results
-            print(f"\nProcessing completed successfully!")
-            print(f"Sample rate: {result['sample_rate']:.0f} Hz")
-            print(f"Number of samples: {result['N_samples']}")
-            print(f"Frequency range: {result['frequencies'][0]:.2f} - {result['frequencies'][-1]:.2f} Hz")
-            
-            print(f"\nMetadata:")
-            print(f"  Date/Time: {result['metadata']['date_time']}")
-            print(f"  Position: X={result['metadata']['x_position']}, Y={result['metadata']['y_position']}, Z={result['metadata']['z_position']}")
-            print(f"  Direction: {result['metadata']['direction']}")
-            
-            # Ask user if they want to save CSV files
-            save_files = messagebox.askyesno("Save Options", "Do you want to save the output CSV files?")
-            
-            if save_files:
-                saved_files = save_results(
-                    result['frequencies'], 
-                    result['Gx'], 
-                    result['Gy'], 
-                    filepath, 
-                    save_files=True,
-                    metadata=result['metadata'],
-                    measurement_case=measurement_case,
-                    Gx_accel=result.get('Gx_accel', None),
-                    Gy_accel=result.get('Gy_accel', None),
-                    G_tool=result.get('G_tool', None),
-                    G_tool_accel=result.get('G_tool_accel', None)
-                )
-                result['saved_files'] = saved_files
-                print(f"\nSaved files:")
-                for file in saved_files:
-                    print(f"  - {file}")
-        else:
-            # Multiple files: use process_multiple_files (with averaging)
-            print(f"Processing {len(filepaths)} files with averaging...")
-            for i, fp in enumerate(filepaths, 1):
-                print(f"  File {i}: {os.path.basename(fp)}")
-            
-            # Process multiple files (always show plots, don't save yet)
-            result = process_multiple_files(filepaths, measurement_case=measurement_case, show_plot=True, save_files=False)
-            
-            # Display results
-            print(f"\nProcessing completed successfully!")
-            print(f"Number of files averaged: {result['n_files']}")
-            print(f"Sample rate: {result['sample_rate']:.0f} Hz")
-            print(f"Number of samples: {result['N_samples']}")
-            print(f"Frequency range: {result['frequencies'][0]:.2f} - {result['frequencies'][-1]:.2f} Hz")
-            
-            print(f"\nMetadata (from first file):")
-            print(f"  Date/Time: {result['metadata']['date_time']}")
-            print(f"  Position: X={result['metadata']['x_position']}, Y={result['metadata']['y_position']}, Z={result['metadata']['z_position']}")
-            print(f"  Direction: {result['metadata']['direction']}")
-            
-            # Ask user if they want to save CSV files
-            save_files = messagebox.askyesno("Save Options", "Do you want to save the output CSV files?")
-            
-            if save_files:
-                saved_files = save_results(
-                    result['frequencies'], 
-                    result['Gx'], 
-                    result['Gy'], 
-                    filepaths[0], 
-                    save_files=True,
-                    metadata=result['metadata'],
-                    measurement_case=measurement_case,
-                    Gx_accel=result.get('Gx_accel', None),
-                    Gy_accel=result.get('Gy_accel', None),
-                    G_tool=result.get('G_tool', None),
-                    G_tool_accel=result.get('G_tool_accel', None)
-                )
-                result['saved_files'] = saved_files
-                print(f"\nSaved files:")
-                for file in saved_files:
-                    print(f"  - {file}")
-        
-        # Wait for user to quit before closing plots
-        wait_for_quit_and_close_plots()
-        
-    except Exception as e:
-        import traceback
-        error_msg = f"An error occurred: {str(e)}"
-        traceback_str = traceback.format_exc()
-        messagebox.showerror("Error", error_msg)
-        print(f"Error: {error_msg}")
-        print("\nFull traceback:")
-        print(traceback_str)
-    
-    finally:
-        root.destroy()
+    Deprecated interactive entry point.
 
-if __name__ == "__main__":
-    main()
+    This project is moving toward `src/main.py` orchestration (and later a GUI).
+    """
+    raise RuntimeError(
+        "Interactive FRF UI has been removed. Run `src/main.py` with a JSON config instead."
+    )
+

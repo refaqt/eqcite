@@ -1,0 +1,57 @@
+{
+  "//": "Example configuration for FRF estimation from measurement files.",
+  "analysis_type": "frf",
+  "data_source": "file",
+  "description": "Example FRF analysis using tap-test CSV files.",
+  "file_paths_x": [
+    "I:/Shared drives/3 - Refaqt/Projects/2025-03 AQTUATOR/Development/7. Testing/Machine FRF and stability/2026-02-19_001_tap_tests/example_x.csv"
+  ],
+  "file_paths_y": [
+    "I:/Shared drives/3 - Refaqt/Projects/2025-03 AQTUATOR/Development/7. Testing/Machine FRF and stability/2026-02-19_001_tap_tests/example_y.csv"
+  ],
+  "channel_mapping": {
+    "acc_workbed_x": 4,
+    "acc_workbed_y": 5,
+    "acc_tool_x": 6,
+    "acc_tool_y": 6,
+    "acc_spindle_top": 0,
+    "acc_spindle_left": 1,
+    "acc_spindle_right": 2,
+    "hammer_x": 8,
+    "hammer_y": 8
+  },
+  "sensitivity_mapping": {
+    "acc_workbed_x": "a_5g",
+    "acc_workbed_y": "a_5g",
+    "acc_tool_x": "a_50g",
+    "acc_tool_y": "a_50g",
+    "acc_spindle_top": "a_5g",
+    "acc_spindle_left": "a_5g",
+    "acc_spindle_right": "a_5g",
+    "hammer_x": "F_10x",
+    "hammer_y": "F_10x"
+  },
+  "frf_pairs": [
+    {
+      "input": "F_x",
+      "output": "x_tool"
+    },
+    {
+      "input": "F_y",
+      "output": "y_tool"
+    }
+  ],
+  "frf_pairs_x": [
+    {
+      "input": "F_x",
+      "output": "x_tool"
+    }
+  ],
+  "frf_pairs_y": [
+    {
+      "input": "F_y",
+      "output": "y_tool"
+    }
+  ]
+}
+

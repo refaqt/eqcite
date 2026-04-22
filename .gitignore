@@ -1,5 +1,18 @@
-*.csv
-data/2025-10-21_14-48-00_X300-Y20-Z50_y.WDH
-*.WDH
 *.txt
 *.png
+*.WDH
+*.CSV
+
+# Python virtual environments
+/venv/
+/.venv/
+/.venv1/
+
+# Python cache / bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Local / ephemeral config (do not commit)
+/config/app_settings.json
+/config/_tmp_sim_config.json

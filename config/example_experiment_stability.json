@@ -1,0 +1,24 @@
+{
+  "//": "Example configuration for stability measurement (spectrogram-based chatter detection).",
+  "analysis_type": "stability_measurement",
+  "data_source": "file",
+  "description": "Example stability analysis using cutting-cycle CSV file.",
+  "file_paths": [
+    "I:/Shared drives/3 - Refaqt/Projects/2025-03 AQTUATOR/Development/7. Testing/Machine FRF and stability/2026-02-19_001_tap_tests/example_cutting.csv"
+  ],
+  "channel_mapping": {
+    "acc_workbed_x": 4,
+    "acc_workbed_y": 5,
+    "acc_spindle_top": 0,
+    "acc_spindle_left": 1,
+    "acc_spindle_right": 2
+  },
+  "sensitivity_mapping": {
+    "acc_workbed_x": "a_5g",
+    "acc_workbed_y": "a_5g",
+    "acc_spindle_top": "a_5g",
+    "acc_spindle_left": "a_5g",
+    "acc_spindle_right": "a_5g"
+  }
+}
+
