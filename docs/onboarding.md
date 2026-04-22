@@ -25,6 +25,17 @@ How to set up, run, and find your way around this repository.
    pip install -r requirements.txt
    ```
 
+## Running the GUI
+
+Run from the repository root:
+
+```bash
+python -m src.gui.app
+```
+
+- The GUI supports FRF and stability tabs, plus saving/loading analyses.
+- App-level settings (like default save folder) are stored in `config/app_settings.json`.
+
 ## Running the main pipeline
 
 The package expects to be run **from the repository root** so imports and default paths resolve (`config/`, etc.).

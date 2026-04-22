@@ -20,6 +20,7 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 | `src/signal_processing.py` | Shared signal processing |
 | `src/simulate_system.py` | Simulation helpers (importable; driven by config) |
 | `src/smoke_test.py` | Minimal non-pytest smoke checks for core flows |
+| `src/gui/` | Qt (PySide6) desktop GUI (config + results + save/load) |
 | `src/legacy/` | Older scripts kept for reference |
 | `src/tools/` | Standalone tools (e.g. acquisition UI, G-code helpers, channel fill) |
 | `config/` | Example experiment JSON and `sensitivities.json` |
@@ -30,6 +31,20 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 1. **Experiment config** (JSON under `config/`, paths referenced by `src/main.py` defaults) sets `analysis_type` (`frf` or `stability_measurement`), `data_source` (`file` or `simulation`), input file lists (when `file`), simulation model params (when `simulation`), and FRF input/output pairs.
 2. **Sensitivities** (`config/sensitivities.json`) scale or map channels when loading measurements.
 3. **Data source**:\n+   - `file`: CSV measurements are loaded through `load_data` using paths from the experiment config.\n+   - `simulation`: `simulate_system` generates time-series, and `load_data` normalizes them into the same signals dict shape.
+
+## GUI architecture (PySide6)
+
+- **Entry point**: `python -m src.gui.app`
+- **Core components**:
+  - `src/gui/main_window.py`: top-level shell (tabs + toolbar + title/description fields)
+  - `src/gui/state.py`: `AnalysisState` (in-memory session state)
+  - `src/gui/persistence.py`: save/load `analysis.json` + app settings (`config/app_settings.json`)
+  - `src/gui/plot_widgets.py`: Matplotlib embedding for result tabs
+- **Persistence**:
+  - An analysis is saved as a **folder** containing `analysis.json` plus `results/figures`, `results/tables`, and `results/logs`.
+  - When saving from the GUI, FRF runs export their current figures + tables into `results/` so the folder is self-contained.
+  - Global sensitivities are stored in `config/sensitivities.json` and are not duplicated per analysis folder.
+  - Per-user GUI defaults (folders, and default FRF sensor configuration) are stored in `config/app_settings.json`.
 
 ## Embedded / firmware
 

@@ -12,3 +12,7 @@
 __pycache__/
 *.pyc
 *.pyo
+
+# Local / ephemeral config (do not commit)
+/config/app_settings.json
+/config/_tmp_sim_config.json

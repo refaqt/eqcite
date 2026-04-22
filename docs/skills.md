@@ -19,6 +19,37 @@ Reusable **project-specific** patterns for this codebase. Agents and humans shou
 
 ---
 
+## Run the Qt GUI
+**When to use:** You want to configure and run FRF/stability interactively (instead of editing JSONs by hand).
+**Pattern:**
+```bash
+python -m src.gui.app
+```
+**Gotchas:** Run from the repo root so `config/` paths resolve. If PySide6 isn’t installed yet, install via `pip install -r requirements.txt`.
+**Last used:** 2026-04-22
+
+---
+
+## Save/load analysis folder format
+**When to use:** You want a portable snapshot of an analysis (inputs + GUI state) plus exported outputs (figures/tables).
+**Pattern:**
+```text
+<analysis-folder>/
+  analysis.json
+  results/
+    figures/
+    tables/
+    logs/
+```
+**Gotchas:**
+- Sensitivities are global and auto-saved to `config/sensitivities.json` (not duplicated into each analysis folder).
+- GUI save exports **FRF** artifacts from the currently computed results:
+  - `results/figures/bode_displacement_force.png`
+  - `results/figures/bode_acceleration_force.png`
+  - `results/tables/frf_x_compliance.csv`, `results/tables/frf_x_accelerance.csv` (and `frf_y_*` if Y was computed)
+  - `results/logs/export_log.json`
+**Last used:** 2026-04-22
+
 ## Entry template
 
 ```markdown
