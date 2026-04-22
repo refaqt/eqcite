@@ -38,8 +38,14 @@ def run_frf_pipeline(exp_cfg_path: Path, sens_path: Path) -> None:
 
     params = frf_estimation.get_system_parameters()
 
-    file_paths_x = [Path(p) for p in exp_cfg.get("file_paths_x", [])]
-    file_paths_y = [Path(p) for p in exp_cfg.get("file_paths_y", [])]
+    directional = load_data.load_directional_data(exp_cfg, sens)
+    data_source = exp_cfg.get("data_source", "file")
+    if data_source == "simulation":
+        file_paths_x = []
+        file_paths_y = []
+    else:
+        file_paths_x = [Path(p) for p in exp_cfg.get("file_paths_x", [])]
+        file_paths_y = [Path(p) for p in exp_cfg.get("file_paths_y", [])]
 
     pairs_x = exp_cfg.get("frf_pairs_x", exp_cfg.get("frf_pairs", []))
     pairs_y = exp_cfg.get("frf_pairs_y", exp_cfg.get("frf_pairs", []))
@@ -48,9 +54,11 @@ def run_frf_pipeline(exp_cfg_path: Path, sens_path: Path) -> None:
     x_plot_result: tuple[str, str, np.ndarray, np.ndarray] | None = None  # (input, output, f, H)
     y_plot_result: tuple[str, str, np.ndarray, np.ndarray] | None = None  # (input, output, f, H)
 
-    for csv_path in file_paths_x:
+    for csv_path in file_paths_x or [Path("<simulation>")]:
         print(f"\n=== FRF analysis for x file {csv_path} ===")
-        data = load_data.load_measurement_file_with_config(csv_path, exp_cfg, sens)
+        data = directional.get("x")
+        if data is None:
+            data = load_data.load_measurement_file_with_config(csv_path, exp_cfg, sens)
 
         time = np.asarray(data["time"])
         for pair in pairs_x:
@@ -77,9 +85,11 @@ def run_frf_pipeline(exp_cfg_path: Path, sens_path: Path) -> None:
         if x_plot_result is not None:
             break  # analyze only first x file (matches current config intent)
 
-    for csv_path in file_paths_y:
+    for csv_path in file_paths_y or [Path("<simulation>")]:
         print(f"\n=== FRF analysis for y file {csv_path} ===")
-        data = load_data.load_measurement_file_with_config(csv_path, exp_cfg, sens)
+        data = directional.get("y")
+        if data is None:
+            data = load_data.load_measurement_file_with_config(csv_path, exp_cfg, sens)
 
         time = np.asarray(data["time"])
         for pair in pairs_y:

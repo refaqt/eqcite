@@ -3,7 +3,12 @@
 Mass-Spring-Damper System Simulator
 
 Simulates a hammer-excited mass-spring-damper system and generates test data
-compatible with frf_estimation.py. Produces CSV output files and visualization plots.
+compatible with the project pipelines.
+
+Note:
+This module used to be a standalone script that wrote CSV files and showed plots.
+It is being refactored into an importable simulation library so `src/main.py` (and later
+the GUI) can drive it without interactive side effects.
 
 Author: MSD System Simulator
 Version: 1.0
@@ -14,6 +19,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from datetime import datetime
 import os
+
+from . import sensor_model
 
 # =============================================================================
 # SYSTEM PARAMETERS
@@ -53,6 +60,129 @@ class SimulationParameters:
         """Calculate damping ratio (dimensionless)."""
         omega_n = np.sqrt(self.stiffness / self.mass)
         return self.damping / (2 * self.mass * omega_n)
+
+
+def simulate_msd_time_series(params: SimulationParameters) -> dict:
+    """
+    Simulate a single-axis MSD system and return time-series in physical units.
+
+    Returns a dict with:
+      - time, fs, dt
+      - F (N): hammer force (filtered)
+      - x (m): position
+      - x_dot (m/s): velocity
+      - x_ddot (m/s^2): acceleration
+    """
+    time, _force_raw, force = generate_hammer_signal(params)
+    position, velocity, acceleration = simulate_msd_system(time, force, params)
+    return {
+        "time": time,
+        "fs": float(params.fs),
+        "dt": float(params.dt),
+        "F": force,
+        "x": position,
+        "x_dot": velocity,
+        "x_ddot": acceleration,
+    }
+
+
+def simulate_two_axis_system(sim_cfg: dict) -> dict:
+    """
+    Simulate an x/y system based on a JSON-like config dict.
+
+    Expected keys (with defaults if missing):
+      - fs (Hz), T (s)
+      - model: {mass, stiffness, damping}
+      - hammer: {force, bandwidth_hz}
+
+    Returns:
+      dict with time, fs, dt, F_x, F_y, x, y, x_ddot, y_ddot
+    """
+    p = SimulationParameters()
+    p.fs = float(sim_cfg.get("fs", p.fs))
+    p.dt = 1.0 / p.fs
+    p.T = float(sim_cfg.get("T", p.T))
+
+    model = sim_cfg.get("model", {})
+    if "mass" in model:
+        p.mass = float(model["mass"])
+    if "stiffness" in model:
+        p.stiffness = float(model["stiffness"])
+    if "damping" in model:
+        p.damping = float(model["damping"])
+    else:
+        # Keep current default relationship if not provided explicitly
+        p.damping = 0.02 * 2 * np.sqrt(p.stiffness * p.mass)
+
+    hammer = sim_cfg.get("hammer", {})
+    if "force" in hammer:
+        p.hammer_force = float(hammer["force"])
+    if "bandwidth_hz" in hammer:
+        p.hammer_bandwidth = float(hammer["bandwidth_hz"])
+
+    # For now, simulate the same system for x and y independently.
+    sim_x = simulate_msd_time_series(p)
+    sim_y = simulate_msd_time_series(p)
+
+    return {
+        "time": sim_x["time"],
+        "fs": sim_x["fs"],
+        "dt": sim_x["dt"],
+        "F_x": sim_x["F"],
+        "F_y": sim_y["F"],
+        "x": sim_x["x"],
+        "y": sim_y["x"],
+        "x_ddot": sim_x["x_ddot"],
+        "y_ddot": sim_y["x_ddot"],
+    }
+
+
+def map_simulated_physical_to_sensors(
+    *,
+    x_spindle: np.ndarray | None = None,
+    y_spindle: np.ndarray | None = None,
+    z_spindle: np.ndarray | None = None,
+    x_tool: np.ndarray | None = None,
+    y_tool: np.ndarray | None = None,
+    acc_workbed_x: np.ndarray | None = None,
+    acc_workbed_y: np.ndarray | None = None,
+) -> dict:
+    """
+    Map simulated physical accelerations to sensor-level accelerations using `sensor_model`.
+
+    This returns sensor keys matching the measurement pipeline naming:
+      acc_spindle_top/left/right, acc_tool_x/acc_tool_y (when possible).
+    """
+    out: dict = {}
+    if acc_workbed_x is None:
+        if x_spindle is not None:
+            acc_workbed_x = np.zeros_like(np.asarray(x_spindle))
+        elif x_tool is not None:
+            acc_workbed_x = np.zeros_like(np.asarray(x_tool))
+    if acc_workbed_y is None:
+        if y_spindle is not None:
+            acc_workbed_y = np.zeros_like(np.asarray(y_spindle))
+        elif y_tool is not None:
+            acc_workbed_y = np.zeros_like(np.asarray(y_tool))
+
+    if x_spindle is not None and y_spindle is not None and z_spindle is not None:
+        out.update(
+            sensor_model.spindle_to_sensors(
+                np.asarray(x_spindle),
+                np.asarray(y_spindle),
+                np.asarray(z_spindle),
+            )
+        )
+    if x_tool is not None and y_tool is not None and acc_workbed_x is not None and acc_workbed_y is not None:
+        out.update(
+            sensor_model.tool_to_sensors(
+                np.asarray(x_tool),
+                np.asarray(y_tool),
+                np.asarray(acc_workbed_x),
+                np.asarray(acc_workbed_y),
+            )
+        )
+    return out
 
 # =============================================================================
 # SIGNAL GENERATION
@@ -471,45 +601,13 @@ def print_system_info(params):
     print(f"  Hammer bandwidth:        {params.hammer_bandwidth:.0f} Hz")
     print("="*60 + "\n")
 
-def main():
-    """Main execution function."""
-    # Initialize parameters
-    params = SimulationParameters()
-    
-    # Print system information
-    print_system_info(params)
-    
-    # Generate hammer signal
-    print("Generating hammer excitation signal...")
-    time, force_raw, force = generate_hammer_signal(params)
-    
-    # Simulate MSD system
-    print("Simulating mass-spring-damper system (discrete z-transform)...")
-    position, velocity, acceleration = simulate_msd_system(time, force, params)
-    
-    # Map to sensors
-    print("Mapping to sensor channels...")
-    sensors = map_to_sensors(acceleration, force, params)
-    
-    # Save to CSV
-    print("Saving data to CSV file...")
-    filepath = save_to_csv(time, sensors, params)
-    print(f"  File saved: {filepath}")
-    
-    # Generate plots
-    print("\nGenerating plots...")
-    print("  Plot 1: Time signals (u and x)")
-    plot_time_signals(time, force, acceleration)
-    
-    print("  Plot 2: Bode magnitude plot")
-    plot_bode_magnitude(time, force, acceleration)
-    
-    print("  Plot 3: All sensor signals")
-    plot_all_sensors(time, acceleration, sensors)
-    
-    print("\nSimulation completed successfully!")
-    print("="*60 + "\n")
+def main() -> None:
+    """
+    Deprecated entry point.
 
-if __name__ == "__main__":
-    main()
+    Simulation is now intended to be driven by `src/main.py` via JSON configuration.
+    """
+    raise RuntimeError(
+        "Direct execution has been removed. Configure simulation in JSON and run src/main.py."
+    )
 

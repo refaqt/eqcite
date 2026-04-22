@@ -116,6 +116,62 @@ def load_csv_file(filepath: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np
 # Basic filtering
 # ---------------------------------------------------------------------------
 
+def remove_bias_window(
+    signal_data: np.ndarray,
+    window_size: int,
+) -> tuple[np.ndarray, int, int]:
+    """
+    Remove DC bias and report the window used for noise estimation.
+
+    Returns:
+        (bias_corrected, window_start_idx, actual_window_size)
+
+    Notes:
+        This is designed to match the needs of the legacy FRF/stability pipelines
+        without duplicating their internal bias/noise bookkeeping.
+    """
+    data = np.asarray(signal_data, dtype=float)
+    n = len(data)
+    if n == 0:
+        return data, 0, 0
+
+    # Use the initial window by convention (quiet pre-impact section).
+    window_size = int(window_size)
+    if window_size <= 0:
+        return data, 0, 0
+
+    actual = min(window_size, n)
+    window_start = 0
+    bias = float(np.mean(data[window_start : window_start + actual]))
+    return data - bias, window_start, actual
+
+
+def calculate_noise_power_from_window(
+    signal_data: np.ndarray,
+    window_start_idx: int,
+    window_size: int,
+) -> float:
+    """
+    Estimate noise power from an explicit window (for compatibility with existing pipelines).
+    """
+    data = np.asarray(signal_data, dtype=float)
+    n = len(data)
+    if n == 0:
+        return 0.0
+
+    window_start_idx = int(max(0, window_start_idx))
+    window_size = int(max(0, window_size))
+    if window_size == 0 or window_start_idx >= n:
+        return 0.0
+
+    end = min(n, window_start_idx + window_size)
+    window = data[window_start_idx:end]
+    if len(window) == 0:
+        return 0.0
+
+    return float(np.mean(window**2))
+
+
 def remove_bias(signal_data: np.ndarray, window_size: int) -> np.ndarray:
     """
     Remove DC bias from a signal using a moving-average window.
@@ -181,6 +237,20 @@ def apply_wiener_filter(
     return filtered
 
 
+def apply_wiener_filter_legacy(
+    signal_data: np.ndarray,
+    noise_power: float,
+    window_size: int,
+) -> np.ndarray:
+    """
+    Legacy-compatible Wiener filter wrapper (matches previous `frf_estimation.py` usage).
+
+    This uses `scipy.signal.wiener` with explicit noise power and window size.
+    """
+    data = np.asarray(signal_data, dtype=float)
+    return signal.wiener(data, mysize=int(window_size), noise=float(noise_power))
+
+
 def apply_savgol_filter(
     signal_data: np.ndarray,
     window_length: int,
@@ -221,6 +291,22 @@ def apply_lowpass_filter(
 
     wn = cutoff_hz / (fs / 2.0)
     b, a = signal.butter(order, wn, btype="low", analog=False)
+    return signal.filtfilt(b, a, data)
+
+
+def apply_lowpass_filter_bessel(
+    signal_data: np.ndarray,
+    cutoff_hz: float,
+    fs: float,
+    order: int = 4,
+) -> np.ndarray:
+    """
+    Legacy-compatible low-pass filter (Bessel) used by older FRF/stability code.
+    """
+    data = np.asarray(signal_data, dtype=float)
+    if cutoff_hz <= 0 or fs <= 0 or cutoff_hz >= fs / 2.0:
+        return data
+    b, a = signal.bessel(N=int(order), Wn=float(cutoff_hz), btype="low", analog=False, fs=float(fs))
     return signal.filtfilt(b, a, data)
 
 

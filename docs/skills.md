@@ -31,3 +31,31 @@ Reusable **project-specific** patterns for this codebase. Agents and humans shou
 **Gotchas:** [Any known edge cases or pitfalls]
 **Last used:** [Date or task reference]
 ```
+
+---
+
+## Simulation config smoke-run
+**When to use:** Quickly verify the FRF pipeline works end-to-end without needing access to measurement CSV paths.
+**Pattern:**
+```python
+import json
+from pathlib import Path
+
+cfg = json.loads(Path("config/config_before_cabinet_assembly.json").read_text(encoding="utf-8"))
+cfg["analysis_type"] = "frf"
+cfg["data_source"] = "simulation"
+cfg["simulation"] = {
+    "fs": 8000,
+    "T": 0.2,
+    "model": {"mass": 8.0, "stiffness": 1e6},
+    "hammer": {"force": 50.0, "bandwidth_hz": 1000.0},
+}
+
+tmp = Path("config/_tmp_sim_config.json")
+tmp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+from src.main import run_frf_pipeline
+run_frf_pipeline(tmp, Path("config/sensitivities.json"))
+```
+**Gotchas:** Welch settings must be valid for short signals; `compute_frf_from_signals()` clamps `nperseg/noverlap` for robustness.
+**Last used:** 2026-04-22

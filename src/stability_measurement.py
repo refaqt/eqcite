@@ -20,20 +20,7 @@ from scipy.signal import ShortTimeFFT
 from scipy.signal.windows import hann
 
 from . import frf_estimation
-
-# Import required functions via the clean wrapper module
-load_csv_file = frf_estimation.load_csv_file
-get_system_parameters = frf_estimation.get_system_parameters
-remove_bias = frf_estimation.remove_bias
-apply_wiener_filter = frf_estimation.apply_wiener_filter
-apply_savgol_filter = frf_estimation.apply_savgol_filter
-apply_lowpass_filter = frf_estimation.apply_lowpass_filter
-calculate_derived_signals = frf_estimation.calculate_derived_signals
-plot_time_domain_signals = frf_estimation.plot_time_domain_signals
-calculate_noise_power = frf_estimation.calculate_noise_power
-plot_signal_comparison = frf_estimation.plot_signal_comparison
-detect_case3_from_filename = frf_estimation.detect_case3_from_filename
-parse_filename = frf_estimation.parse_filename
+from . import signal_processing
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
@@ -438,11 +425,11 @@ def process_stability_measurement(filepath, window_duration=DEFAULT_WINDOW_DURAT
     """
     try:
         # Load system parameters
-        params = get_system_parameters()
+        params = frf_estimation.get_system_parameters()
         
         # Load CSV data
         print(f"Loading CSV file: {filepath}")
-        time, A0, A1, A2, A3, A4, A5, A6, A7, fs, dt = load_csv_file(filepath)
+        time, A0, A1, A2, A3, A4, A5, A6, A7, fs, dt = signal_processing.load_csv_file(filepath)
         print(f"Loaded {len(time)} samples at {fs:.0f} Hz")
         
         # Store original signals for comparison
@@ -454,14 +441,14 @@ def process_stability_measurement(filepath, window_duration=DEFAULT_WINDOW_DURAT
         # Remove bias from all analog input signals
         window_size = params['bias_window_size']
         print("Removing bias from signals...")
-        A0, bias_idx_A0, actual_window_A0 = remove_bias(A0, window_size)
-        A1, bias_idx_A1, actual_window_A1 = remove_bias(A1, window_size)
-        A2, bias_idx_A2, actual_window_A2 = remove_bias(A2, window_size)
-        A3, bias_idx_A3, actual_window_A3 = remove_bias(A3, window_size)
-        A4, bias_idx_A4, actual_window_A4 = remove_bias(A4, window_size)
-        A5, bias_idx_A5, actual_window_A5 = remove_bias(A5, window_size)
-        A6, bias_idx_A6, actual_window_A6 = remove_bias(A6, window_size)
-        A7, bias_idx_A7, actual_window_A7 = remove_bias(A7, window_size)
+        A0, bias_idx_A0, actual_window_A0 = signal_processing.remove_bias_window(A0, window_size)
+        A1, bias_idx_A1, actual_window_A1 = signal_processing.remove_bias_window(A1, window_size)
+        A2, bias_idx_A2, actual_window_A2 = signal_processing.remove_bias_window(A2, window_size)
+        A3, bias_idx_A3, actual_window_A3 = signal_processing.remove_bias_window(A3, window_size)
+        A4, bias_idx_A4, actual_window_A4 = signal_processing.remove_bias_window(A4, window_size)
+        A5, bias_idx_A5, actual_window_A5 = signal_processing.remove_bias_window(A5, window_size)
+        A6, bias_idx_A6, actual_window_A6 = signal_processing.remove_bias_window(A6, window_size)
+        A7, bias_idx_A7, actual_window_A7 = signal_processing.remove_bias_window(A7, window_size)
         
         # Store corrected signals for comparison plots
         corrected_signals = {
@@ -474,24 +461,24 @@ def process_stability_measurement(filepath, window_duration=DEFAULT_WINDOW_DURAT
         if use_wiener:
             print("Applying Wiener filter...")
             # Calculate noise power for each channel
-            noise_A0 = max(calculate_noise_power(original_signals['A0'], bias_idx_A0, actual_window_A0), 1e-12)
-            noise_A1 = max(calculate_noise_power(original_signals['A1'], bias_idx_A1, actual_window_A1), 1e-12)
-            noise_A2 = max(calculate_noise_power(original_signals['A2'], bias_idx_A2, actual_window_A2), 1e-12)
-            noise_A3 = max(calculate_noise_power(original_signals['A3'], bias_idx_A3, actual_window_A3), 1e-12)
-            noise_A4 = max(calculate_noise_power(original_signals['A4'], bias_idx_A4, actual_window_A4), 1e-12)
-            noise_A5 = max(calculate_noise_power(original_signals['A5'], bias_idx_A5, actual_window_A5), 1e-12)
-            noise_A6 = max(calculate_noise_power(original_signals['A6'], bias_idx_A6, actual_window_A6), 1e-12)
-            noise_A7 = max(calculate_noise_power(original_signals['A7'], bias_idx_A7, actual_window_A7), 1e-12)
+            noise_A0 = max(signal_processing.calculate_noise_power_from_window(original_signals['A0'], bias_idx_A0, actual_window_A0), 1e-12)
+            noise_A1 = max(signal_processing.calculate_noise_power_from_window(original_signals['A1'], bias_idx_A1, actual_window_A1), 1e-12)
+            noise_A2 = max(signal_processing.calculate_noise_power_from_window(original_signals['A2'], bias_idx_A2, actual_window_A2), 1e-12)
+            noise_A3 = max(signal_processing.calculate_noise_power_from_window(original_signals['A3'], bias_idx_A3, actual_window_A3), 1e-12)
+            noise_A4 = max(signal_processing.calculate_noise_power_from_window(original_signals['A4'], bias_idx_A4, actual_window_A4), 1e-12)
+            noise_A5 = max(signal_processing.calculate_noise_power_from_window(original_signals['A5'], bias_idx_A5, actual_window_A5), 1e-12)
+            noise_A6 = max(signal_processing.calculate_noise_power_from_window(original_signals['A6'], bias_idx_A6, actual_window_A6), 1e-12)
+            noise_A7 = max(signal_processing.calculate_noise_power_from_window(original_signals['A7'], bias_idx_A7, actual_window_A7), 1e-12)
 
             # Apply Wiener filter
-            A0 = apply_wiener_filter(A0, noise_A0, actual_window_A0)
-            A1 = apply_wiener_filter(A1, noise_A1, actual_window_A1)
-            A2 = apply_wiener_filter(A2, noise_A2, actual_window_A2)
-            A3 = apply_wiener_filter(A3, noise_A3, actual_window_A3)
-            A4 = apply_wiener_filter(A4, noise_A4, actual_window_A4)
-            A5 = apply_wiener_filter(A5, noise_A5, actual_window_A5)
-            A6 = apply_wiener_filter(A6, noise_A6, actual_window_A6)
-            A7 = apply_wiener_filter(A7, noise_A7, actual_window_A7)
+            A0 = signal_processing.apply_wiener_filter_legacy(A0, noise_A0, actual_window_A0)
+            A1 = signal_processing.apply_wiener_filter_legacy(A1, noise_A1, actual_window_A1)
+            A2 = signal_processing.apply_wiener_filter_legacy(A2, noise_A2, actual_window_A2)
+            A3 = signal_processing.apply_wiener_filter_legacy(A3, noise_A3, actual_window_A3)
+            A4 = signal_processing.apply_wiener_filter_legacy(A4, noise_A4, actual_window_A4)
+            A5 = signal_processing.apply_wiener_filter_legacy(A5, noise_A5, actual_window_A5)
+            A6 = signal_processing.apply_wiener_filter_legacy(A6, noise_A6, actual_window_A6)
+            A7 = signal_processing.apply_wiener_filter_legacy(A7, noise_A7, actual_window_A7)
         
         # Apply Savitzky-Golay filter if enabled
         use_savgol = params.get('savgol_filter', False)
@@ -500,14 +487,14 @@ def process_stability_measurement(filepath, window_duration=DEFAULT_WINDOW_DURAT
             window_length = params.get('savgol_window_length', 10)
             polyorder = params.get('savgol_polyorder', 3)
             
-            A0 = apply_savgol_filter(A0, window_length, polyorder)
-            A1 = apply_savgol_filter(A1, window_length, polyorder)
-            A2 = apply_savgol_filter(A2, window_length, polyorder)
-            A3 = apply_savgol_filter(A3, window_length, polyorder)
-            A4 = apply_savgol_filter(A4, window_length, polyorder)
-            A5 = apply_savgol_filter(A5, window_length, polyorder)
-            A6 = apply_savgol_filter(A6, window_length, polyorder)
-            A7 = apply_savgol_filter(A7, window_length, polyorder)
+            A0 = signal_processing.apply_savgol_filter(A0, window_length, polyorder)
+            A1 = signal_processing.apply_savgol_filter(A1, window_length, polyorder)
+            A2 = signal_processing.apply_savgol_filter(A2, window_length, polyorder)
+            A3 = signal_processing.apply_savgol_filter(A3, window_length, polyorder)
+            A4 = signal_processing.apply_savgol_filter(A4, window_length, polyorder)
+            A5 = signal_processing.apply_savgol_filter(A5, window_length, polyorder)
+            A6 = signal_processing.apply_savgol_filter(A6, window_length, polyorder)
+            A7 = signal_processing.apply_savgol_filter(A7, window_length, polyorder)
         
         # Store filtered signals for comparison plots
         filtered_signals = {
@@ -518,16 +505,16 @@ def process_stability_measurement(filepath, window_duration=DEFAULT_WINDOW_DURAT
         # Show signal comparison plots
         if show_plot:
             print("Plotting signal comparison (original, bias-corrected, filtered)...")
-            plot_signal_comparison(time, original_signals, corrected_signals, filtered_signals, show_plot)
+            frf_estimation.plot_signal_comparison(time, original_signals, corrected_signals, filtered_signals, show_plot)
         
         # Detect measurement case from filename
-        measurement_case = detect_case3_from_filename([filepath])
+        measurement_case = frf_estimation.detect_case3_from_filename([filepath])
         if not measurement_case:
             measurement_case = 'case1'  # Default to case1 if not case3
         
         # Calculate derived signals (x, y accelerations)
         print(f"Calculating derived signals (measurement case: {measurement_case})...")
-        signals = calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measurement_case=measurement_case)
+        signals = frf_estimation.calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measurement_case=measurement_case)
         x_accel = signals['x']  # X-direction acceleration (m/s²)
         y_accel = signals['y']  # Y-direction acceleration (m/s²)
         
@@ -536,13 +523,13 @@ def process_stability_measurement(filepath, window_duration=DEFAULT_WINDOW_DURAT
         
         # Apply low-pass filter to x and y accelerations
         print(f"Applying low-pass filter (cutoff: {LOWPASS_CUTOFF_HZ} Hz)...")
-        x_accel_lowpass = apply_lowpass_filter(x_accel, LOWPASS_CUTOFF_HZ, fs)
-        y_accel_lowpass = apply_lowpass_filter(y_accel, LOWPASS_CUTOFF_HZ, fs)
+        x_accel_lowpass = signal_processing.apply_lowpass_filter_bessel(x_accel, LOWPASS_CUTOFF_HZ, fs)
+        y_accel_lowpass = signal_processing.apply_lowpass_filter_bessel(y_accel, LOWPASS_CUTOFF_HZ, fs)
         
         # Plot time-domain signals
         if show_plot:
             print("Plotting time-domain signals...")
-            plot_time_domain_signals(time, signals['u'], x_accel, y_accel, show_plot=True, z_accel=z_accel)
+            frf_estimation.plot_time_domain_signals(time, signals['u'], x_accel, y_accel, show_plot=True, z_accel=z_accel)
             
             # Plot low-pass filtered signal comparison
             print("Plotting low-pass filtered signal comparison...")
@@ -575,7 +562,7 @@ def process_stability_measurement(filepath, window_duration=DEFAULT_WINDOW_DURAT
         
         # Determine detection direction from filename
         try:
-            filename_metadata = parse_filename(filepath)
+            filename_metadata = frf_estimation.parse_filename(filepath)
             detection_direction = filename_metadata['direction'].lower()
         except (ValueError, KeyError):
             # Default to 'x' if parsing fails

@@ -13,8 +13,6 @@ Version: 1.0
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-import tkinter as tk
-from tkinter import filedialog, messagebox
 import re
 import os
 from pathlib import Path
@@ -168,7 +166,10 @@ def compute_frf_from_signals(
         params = get_system_parameters()
 
     nperseg = int(params.get("welch_nperseg", 2048))
+    # Clamp Welch settings to valid ranges for short signals (common in simulations/smoke tests).
+    nperseg = max(2, min(nperseg, len(u), len(y)))
     noverlap = int(params.get("welch_noverlap", nperseg // 2))
+    noverlap = max(0, min(noverlap, nperseg - 1))
     window = params.get("welch_window", "hamming")
 
     f, Puy = signal.csd(
@@ -4090,75 +4091,11 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
 
 def select_measurement_case(root=None):
     """
-    Display dialog for user to select measurement case.
-    
-    Parameters:
-    -----------
-    root : tk.Tk, optional
-        Root window to use. If None, creates a new root window.
-    
-    Returns:
-    --------
-    str : Case identifier ('case1' or 'case2')
-        Returns None if user cancels
-        Note: For 'case2', the direction (x/y) will be inferred from filename later
+    Deprecated: interactive measurement-case selection.
     """
-    # Use provided root or create new one
-    created_root = False
-    if root is None:
-        root = tk.Tk()
-        root.withdraw()  # Hide root window if we created it
-        created_root = True
-    
-    # Create dialog window
-    dialog = tk.Toplevel(root)
-    dialog.title("Select Measurement Case")
-    dialog.geometry("400x200")
-    
-    # Make dialog modal
-    dialog.grab_set()
-    
-    # Bring dialog to front and give it focus
-    dialog.lift()
-    dialog.focus_force()
-    
-    # Update root to ensure dialog is rendered
-    root.update()
-    
-    # Variable to store result
-    result = [None]
-    
-    def select_case1():
-        result[0] = 'case1'
-        dialog.destroy()
-    
-    def select_case2():
-        result[0] = 'case2'
-        dialog.destroy()
-    
-    # Main dialog content
-    tk.Label(dialog, text="Select measurement case:", 
-            font=("Arial", 12, "bold")).pack(pady=15)
-    
-    btn_case1 = tk.Button(dialog, text="Case 1: Accelerometers only on z-slide", 
-                         command=select_case1, width=35, height=2)
-    btn_case1.pack(pady=10)
-    
-    btn_case2 = tk.Button(dialog, text="Case 2: Accelerometer at tool", 
-                         command=select_case2, width=35, height=2)
-    btn_case2.pack(pady=10)
-    
-    # Update to ensure dialog content is visible
-    root.update()
-    
-    # Wait for dialog to close
-    dialog.wait_window()
-    
-    # Only destroy root if we created it
-    if created_root:
-        root.destroy()
-    
-    return result[0]
+    raise RuntimeError(
+        "Interactive selection has been removed. Configure analysis via JSON and run src/main.py."
+    )
 
 def infer_case2_direction(filepaths, root=None):
     """
@@ -4168,8 +4105,8 @@ def infer_case2_direction(filepaths, root=None):
     -----------
     filepaths : list
         List of file paths to analyze
-    root : tk.Tk, optional
-        Root window for error dialogs. If None, creates a temporary one.
+    root : Any, optional
+        Deprecated legacy argument (no longer used for dialogs).
     
     Returns:
     --------
@@ -4196,10 +4133,7 @@ def infer_case2_direction(filepaths, root=None):
         except Exception as e:
             # If parsing fails, show error and return None
             error_msg = f"Error parsing filename: {str(e)}\n\nFile: {os.path.basename(filepath)}"
-            if root is not None:
-                messagebox.showerror("File Parsing Error", error_msg)
-            else:
-                print(f"Error: {error_msg}")
+            print(f"Error: {error_msg}")
             return None
     
     # Check if all directions are the same
@@ -4211,10 +4145,7 @@ def infer_case2_direction(filepaths, root=None):
             "Files selected:\n" + "\n".join([f"  - {os.path.basename(fp)} ({d})" 
                                             for fp, d in zip(filepaths, directions)])
         )
-        if root is not None:
-            messagebox.showerror("Mixed Directions Error", error_msg)
-        else:
-            print(f"Error: {error_msg}")
+        print(f"Error: {error_msg}")
         return None
     
     # All files have the same direction
@@ -4229,8 +4160,8 @@ def detect_case3_from_filename(filepaths, root=None):
     -----------
     filepaths : list
         List of file paths to analyze
-    root : tk.Tk, optional
-        Root window for error dialogs. If None, creates a temporary one.
+    root : Any, optional
+        Deprecated legacy argument (no longer used for dialogs).
     
     Returns:
     --------
@@ -4261,10 +4192,7 @@ def detect_case3_from_filename(filepaths, root=None):
             "Files with 'XYZ':\n" + "\n".join([f"  - {os.path.basename(fp)}" for fp in xyz_files]) + "\n\n"
             "Files without 'XYZ':\n" + "\n".join([f"  - {os.path.basename(fp)}" for fp in non_xyz_files])
         )
-        if root is not None:
-            messagebox.showerror("Mixed Measurement Cases Error", error_msg)
-        else:
-            print(f"Error: {error_msg}")
+        print(f"Error: {error_msg}")
         return None
     
     # All files have the same case - return 'case3' if all have XYZ, None otherwise
@@ -4286,149 +4214,13 @@ def wait_for_quit_and_close_plots():
 
     plt.show()
 
-def main():
+def main() -> None:
     """
-    Entry point with file dialog and user options.
-    """
-    # Create root window (hidden)
-    root = tk.Tk()
-    root.withdraw()
-    
-    try:
-        # Select measurement case before file selection
-        measurement_case = select_measurement_case(root)
-        
-        if not measurement_case:
-            print("No measurement case selected. Exiting.")
-            return
-        
-        print(f"Selected measurement case: {measurement_case}")
-        
-        # File selection dialog (allows multiple selection)
-        filepaths = filedialog.askopenfilenames(
-            title="Select CSV measurement file(s)",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
-        )
-        
-        if not filepaths:
-            print("No file selected. Exiting.")
-            return
-        
-        # Convert tuple to list
-        filepaths = list(filepaths)
-        
-        # Check for Case 3 first (auto-detect from filename)
-        detected_case3 = detect_case3_from_filename(filepaths, root)
-        if detected_case3:
-            measurement_case = detected_case3
-            print(f"Auto-detected measurement case from filename(s): {measurement_case}")
-        # If Case 2 was selected, infer direction from filename(s)
-        elif measurement_case == 'case2':
-            final_measurement_case = infer_case2_direction(filepaths, root)
-            if not final_measurement_case:
-                print("Failed to infer Case 2 direction. Exiting.")
-                return
-            measurement_case = final_measurement_case
-            print(f"Inferred measurement case from filename(s): {measurement_case}")
-        
-        # Determine if single or multiple files
-        if len(filepaths) == 1:
-            # Single file: use existing process_measurement_file (no averaging)
-            filepath = filepaths[0]
-            print(f"Processing single file: {filepath}")
-            
-            # Process the file (always show plots, don't save yet)
-            result = process_measurement_file(filepath, measurement_case=measurement_case, show_plot=True, save_files=False)
-            
-            # Display results
-            print(f"\nProcessing completed successfully!")
-            print(f"Sample rate: {result['sample_rate']:.0f} Hz")
-            print(f"Number of samples: {result['N_samples']}")
-            print(f"Frequency range: {result['frequencies'][0]:.2f} - {result['frequencies'][-1]:.2f} Hz")
-            
-            print(f"\nMetadata:")
-            print(f"  Date/Time: {result['metadata']['date_time']}")
-            print(f"  Position: X={result['metadata']['x_position']}, Y={result['metadata']['y_position']}, Z={result['metadata']['z_position']}")
-            print(f"  Direction: {result['metadata']['direction']}")
-            
-            # Ask user if they want to save CSV files
-            save_files = messagebox.askyesno("Save Options", "Do you want to save the output CSV files?")
-            
-            if save_files:
-                saved_files = save_results(
-                    result['frequencies'], 
-                    result['Gx'], 
-                    result['Gy'], 
-                    filepath, 
-                    save_files=True,
-                    metadata=result['metadata'],
-                    measurement_case=measurement_case,
-                    Gx_accel=result.get('Gx_accel', None),
-                    Gy_accel=result.get('Gy_accel', None),
-                    G_tool=result.get('G_tool', None),
-                    G_tool_accel=result.get('G_tool_accel', None)
-                )
-                result['saved_files'] = saved_files
-                print(f"\nSaved files:")
-                for file in saved_files:
-                    print(f"  - {file}")
-        else:
-            # Multiple files: use process_multiple_files (with averaging)
-            print(f"Processing {len(filepaths)} files with averaging...")
-            for i, fp in enumerate(filepaths, 1):
-                print(f"  File {i}: {os.path.basename(fp)}")
-            
-            # Process multiple files (always show plots, don't save yet)
-            result = process_multiple_files(filepaths, measurement_case=measurement_case, show_plot=True, save_files=False)
-            
-            # Display results
-            print(f"\nProcessing completed successfully!")
-            print(f"Number of files averaged: {result['n_files']}")
-            print(f"Sample rate: {result['sample_rate']:.0f} Hz")
-            print(f"Number of samples: {result['N_samples']}")
-            print(f"Frequency range: {result['frequencies'][0]:.2f} - {result['frequencies'][-1]:.2f} Hz")
-            
-            print(f"\nMetadata (from first file):")
-            print(f"  Date/Time: {result['metadata']['date_time']}")
-            print(f"  Position: X={result['metadata']['x_position']}, Y={result['metadata']['y_position']}, Z={result['metadata']['z_position']}")
-            print(f"  Direction: {result['metadata']['direction']}")
-            
-            # Ask user if they want to save CSV files
-            save_files = messagebox.askyesno("Save Options", "Do you want to save the output CSV files?")
-            
-            if save_files:
-                saved_files = save_results(
-                    result['frequencies'], 
-                    result['Gx'], 
-                    result['Gy'], 
-                    filepaths[0], 
-                    save_files=True,
-                    metadata=result['metadata'],
-                    measurement_case=measurement_case,
-                    Gx_accel=result.get('Gx_accel', None),
-                    Gy_accel=result.get('Gy_accel', None),
-                    G_tool=result.get('G_tool', None),
-                    G_tool_accel=result.get('G_tool_accel', None)
-                )
-                result['saved_files'] = saved_files
-                print(f"\nSaved files:")
-                for file in saved_files:
-                    print(f"  - {file}")
-        
-        # Wait for user to quit before closing plots
-        wait_for_quit_and_close_plots()
-        
-    except Exception as e:
-        import traceback
-        error_msg = f"An error occurred: {str(e)}"
-        traceback_str = traceback.format_exc()
-        messagebox.showerror("Error", error_msg)
-        print(f"Error: {error_msg}")
-        print("\nFull traceback:")
-        print(traceback_str)
-    
-    finally:
-        root.destroy()
+    Deprecated interactive entry point.
 
-if __name__ == "__main__":
-    main()
+    This project is moving toward `src/main.py` orchestration (and later a GUI).
+    """
+    raise RuntimeError(
+        "Interactive FRF UI has been removed. Run `src/main.py` with a JSON config instead."
+    )
+

@@ -18,6 +18,7 @@ from typing import Dict, Any
 import numpy as np
 
 from .signal_processing import load_csv_file
+from . import simulate_system
 from .sensor_model import (
     sensors_to_spindle,
     sensors_to_tool,
@@ -156,4 +157,78 @@ def load_measurement_file_with_config(
     }
     result.update(inputs)
     return result
+
+
+def load_simulation_with_config(
+    experiment_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Generate simulated time-series and return the same normalized signal dict shape
+    used by `load_measurement_file_with_config()`.
+
+    Expected config keys:
+      - simulation: dict passed to `simulate_system.simulate_two_axis_system()`
+      - (optional) choose whether to expose acceleration or displacement as outputs
+
+    Returns keys:
+      time, fs, dt, x_tool, y_tool, F_x, F_y (and optional intermediate outputs)
+    """
+    sim_cfg = experiment_cfg.get("simulation", {})
+    sim = simulate_system.simulate_two_axis_system(sim_cfg)
+
+    time = np.asarray(sim["time"])
+    result: Dict[str, Any] = {
+        "filepath": None,
+        "time": time,
+        "fs": float(sim["fs"]),
+        "dt": float(sim["dt"]),
+        "channels": {},
+        "sensors_physical": {},
+    }
+
+    # For downstream FRF estimation we default to using tool signals.
+    # Use acceleration as a proxy for tool acceleration signals (x_tool/y_tool).
+    result["x_tool"] = np.asarray(sim.get("x_ddot", sim.get("x")))
+    result["y_tool"] = np.asarray(sim.get("y_ddot", sim.get("y")))
+    result["x_spindle"] = None
+    result["y_spindle"] = None
+    result["z_spindle"] = None
+
+    result["F_x"] = np.asarray(sim["F_x"])
+    result["F_y"] = np.asarray(sim["F_y"])
+
+    return result
+
+
+def load_directional_data(
+    experiment_cfg: Dict[str, Any],
+    sensitivities: Dict[str, float],
+) -> Dict[str, Any]:
+    """
+    Load or generate data based on `data_source` in config.
+
+    Returns:
+      dict with optional keys:
+        - x: signals dict for x-direction
+        - y: signals dict for y-direction
+    """
+    data_source = experiment_cfg.get("data_source", "file")
+    if data_source == "simulation":
+        sim = load_simulation_with_config(experiment_cfg)
+        # For simulation we provide both directions if the signals exist.
+        return {"x": sim, "y": sim}
+
+    if data_source != "file":
+        raise ValueError(f"Unknown data_source: {data_source}")
+
+    out: Dict[str, Any] = {}
+    file_paths_x = [Path(p) for p in experiment_cfg.get("file_paths_x", [])]
+    file_paths_y = [Path(p) for p in experiment_cfg.get("file_paths_y", [])]
+
+    if file_paths_x:
+        out["x"] = load_measurement_file_with_config(file_paths_x[0], experiment_cfg, sensitivities)
+    if file_paths_y:
+        out["y"] = load_measurement_file_with_config(file_paths_y[0], experiment_cfg, sensitivities)
+
+    return out
 

@@ -5,10 +5,11 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 ## What’s inside
 
 - `src/main.py`: main entry point that runs either the FRF pipeline (`analysis_type: "frf"`) or the stability pipeline (`analysis_type: "stability_measurement"`), based on the JSON config it loads.
-- `src/load_data.py`: measurement loading + channel/sensitivity mapping (used by the FRF pipeline).
+- `src/load_data.py`: data loading for `data_source: "file"` **and** `data_source: "simulation"`, plus channel/sensitivity mapping (used by the FRF pipeline).
 - `src/signal_processing.py`: CSV parsing and shared signal utilities (used by both pipelines).
-- `src/frf_estimation.py`: FRF computation and plotting utilities.
+- `src/frf_estimation.py`: FRF computation and plotting utilities (interactive tkinter UI removed; driven by `src/main.py`).
 - `src/stability_measurement.py`: stability pipeline (spectrograms + chatter detection + plotting).
+- `src/simulate_system.py`: simulation helpers (driven by config; importable).
 
 See also:
 
@@ -49,9 +50,49 @@ python -m src.main
 
 By default, `src/main.py` loads:
 
-- `config/example_experiment_frf.json`
+- `config/config_before_cabinet_assembly.json`
 
 and dispatches based on `analysis_type` inside that JSON.
+
+### Quickstart: tap test FRF from your own CSV (recommended workflow)
+
+Goal: load your tap-test CSV(s), apply the correct sensor sensitivities, and see the Bode plots.
+
+1. Pick a config file under `config/` to start from
+   - Recommended: copy `config/config_before_cabinet_assembly.json` to a new file next to it, e.g. `config/my_tap_test.json`.
+
+2. Edit your config JSON (`config/my_tap_test.json`)
+   - Set:
+     - `analysis_type` to `"frf"`
+     - `data_source` to `"file"`
+   - Set your CSV paths:
+     - `file_paths_x`: list of **x-direction** tap-test CSVs (the pipeline uses the first file)
+     - `file_paths_y`: list of **y-direction** tap-test CSVs (the pipeline uses the first file)
+   - Make sure `frf_pairs_x` and `frf_pairs_y` match the signals you expect after loading. Typical defaults:
+     - x: `{"input": "F_x", "output": "x_tool"}`
+     - y: `{"input": "F_y", "output": "y_tool"}`
+
+3. Verify sensor sensitivities
+   - Sensitivity values live in `config/sensitivities.json` (shared across experiments).
+   - Your experiment config must map sensors to sensitivity keys via `sensitivity_mapping`.
+   - The loader applies: `physical = raw_volts * sensitivity_value`.
+
+4. Verify channel mapping
+   - In your experiment config, set `channel_mapping` to map sensor names to analog channel indices (`0`-based for `A0..A7`).
+   - If a required channel is missing, the program raises a `ValueError` and stops (so you don’t silently compute wrong FRFs).
+
+5. Point `src/main.py` at your config (currently hard-coded)
+   - Open `src/main.py` and set `DEFAULT_CONFIG` to your JSON (e.g. `config/my_tap_test.json`).
+
+6. Run
+
+```powershell
+python -m src.main
+```
+
+Expected result:
+- Console prints `Computed x FRF ...` and `Computed y FRF ...`
+- A combined Bode plot window appears (Matplotlib).
 
 ### Running stability measurement
 
@@ -59,7 +100,7 @@ and dispatches based on `analysis_type` inside that JSON.
 
 To run stability, either:
 
-- edit `src/main.py`’s `DEFAULT_CONFIG` to point at `config/example_experiment_stability.json`, or
+- edit `src/main.py`’s `DEFAULT_CONFIG` to point at your stability config JSON, or
 - update the JSON file currently referenced by `DEFAULT_CONFIG` so that it sets `analysis_type` to `"stability_measurement"` and provides `file_paths`.
 
 ## Config-driven usage
@@ -136,4 +177,18 @@ This matters if you use relative paths inside experiment JSON.
 - `ValueError: Expected 8 or 9 columns`: your CSV data rows don’t have `Time + A0..A6 (+ optional A7)` with comma separation.
 - `Could not find sample rate in CSV header`: your CSV’s first line doesn’t match the expected `Samples per sec. = .../1` pattern.
 - FRF skips FRF pairs: the `input`/`output` names in `frf_pairs` don’t exist in the loaded data for your `channel_mapping`/`sensitivity_mapping` setup.
+
+## Simulation mode (optional)
+
+For quick development/testing without measurement files:
+
+- Set in your experiment JSON:
+  - `data_source: "simulation"`
+  - `analysis_type: "frf"`
+  - `simulation`: a dict with (example):
+    - `fs`, `T`
+    - `model: {mass, stiffness, damping}` (damping optional; default is derived)
+    - `hammer: {force, bandwidth_hz}`
+
+Then run `python -m src.main` (with `DEFAULT_CONFIG` pointing at that JSON). This produces synthetic `F_x/F_y` and tool outputs and runs the same FRF computation + plotting.
 

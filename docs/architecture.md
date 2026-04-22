@@ -18,7 +18,8 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 | `src/stability_lobe_diagram.py` | Stability lobe diagram related logic (see module for current scope) |
 | `src/sensor_model.py` | Sensor / model helpers |
 | `src/signal_processing.py` | Shared signal processing |
-| `src/simulate_system.py` | Simulation helpers |
+| `src/simulate_system.py` | Simulation helpers (importable; driven by config) |
+| `src/smoke_test.py` | Minimal non-pytest smoke checks for core flows |
 | `src/legacy/` | Older scripts kept for reference |
 | `src/tools/` | Standalone tools (e.g. acquisition UI, G-code helpers, channel fill) |
 | `config/` | Example experiment JSON and `sensitivities.json` |
@@ -26,9 +27,9 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 
 ## Data and configuration flow
 
-1. **Experiment config** (JSON under `config/`, paths referenced by `src/main.py` defaults) sets `analysis_type` (`frf` or `stability_measurement`), input file lists, and FRF input/output pairs.
+1. **Experiment config** (JSON under `config/`, paths referenced by `src/main.py` defaults) sets `analysis_type` (`frf` or `stability_measurement`), `data_source` (`file` or `simulation`), input file lists (when `file`), simulation model params (when `simulation`), and FRF input/output pairs.
 2. **Sensitivities** (`config/sensitivities.json`) scale or map channels when loading measurements.
-3. **CSV measurements** are loaded through `load_data` using paths from the experiment config.
+3. **Data source**:\n+   - `file`: CSV measurements are loaded through `load_data` using paths from the experiment config.\n+   - `simulation`: `simulate_system` generates time-series, and `load_data` normalizes them into the same signals dict shape.
 
 ## Embedded / firmware
 

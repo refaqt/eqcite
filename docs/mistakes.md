@@ -44,3 +44,12 @@ Log errors, wrong approaches, and **prevention rules** so agents and humans do n
 **Fix applied:** Re-ran the stability smoke test with `window_duration=0.2` (and `show_plot=False`), which completed successfully.
 **Prevention rule:** When running stability/rolling-window code, ensure `window_duration` is small enough relative to the data duration (`len(time)/fs`) to keep the computed window count non-negative.
 **Affected files:** `src/stability_measurement.py`
+
+---
+
+## Used bash heredoc in PowerShell — 2026-04-22
+**What happened:** I tried to run a multi-line Python snippet using bash-style heredoc (`python - <<'PY' ...`) and it failed to parse in PowerShell.
+**Root cause:** Assumed bash heredoc syntax would work in the current PowerShell environment.
+**Fix applied:** Re-ran the command using `python -c` with an inline script string.
+**Prevention rule:** On Windows/PowerShell, avoid bash heredocs; use `python -c`, a temporary `.py` file, or PowerShell-native piping.
+**Affected files:** None (command-line only)
