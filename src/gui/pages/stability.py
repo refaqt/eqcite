@@ -76,8 +76,7 @@ class StabilityRootPage(QWidget):
         container = QWidget()
         lay = QVBoxLayout(container)
         lay.setContentsMargins(10, 10, 10, 10)
-        lay.addWidget(widget)
-        lay.addStretch(1)
+        lay.addWidget(widget, 1)
         return container
 
 

@@ -5,9 +5,10 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List
 
 import numpy as np
+from scipy import signal
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -25,13 +26,14 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QComboBox,
     QVBoxLayout,
     QVBoxLayout,
     QWidget,
     QFileDialog,
 )
 
-from ... import frf_estimation, load_data
+from ... import frf_estimation, load_data, signal_processing
 from ..plot_widgets import MatplotlibFigureWidget
 
 
@@ -50,6 +52,36 @@ class _DirectionalFrfResult:
     direction: str  # "x" | "y"
     compliance: Tuple[np.ndarray, np.ndarray]  # (f_hz, H_disp_over_force complex)
     accelerance: Tuple[np.ndarray, np.ndarray]  # (f_hz, H_accel_over_force complex)
+
+
+@dataclass
+class _SignalStep:
+    name: str
+    y: np.ndarray
+
+
+@dataclass
+class _DirectionalProcessing:
+    direction: str  # "x" | "y"
+    time: np.ndarray
+    fs_hz: float
+
+    # Signals (each list is a processing-chain overlay for one axis)
+    u_steps: List[_SignalStep]
+    resp_steps: List[_SignalStep]  # acceleration response for this direction
+
+    # Window used (for optional overlay/inspection)
+    window: Optional[np.ndarray]
+
+    # Frequency-domain diagnostics (Welch grid)
+    f_hz: np.ndarray
+    psd_u: np.ndarray
+    coherence_uy: np.ndarray
+
+    # FFT magnitude (separate plot) for selected steps (raw + last filtered + windowed)
+    fft_f_hz: np.ndarray
+    fft_u_mag: Dict[str, np.ndarray]  # step-name -> |FFT|
+    fft_resp_mag: Dict[str, np.ndarray]
 
 
 class FrfRootPage(QWidget):
@@ -118,8 +150,7 @@ class FrfRootPage(QWidget):
         container = QWidget()
         lay = QVBoxLayout(container)
         lay.setContentsMargins(10, 10, 10, 10)
-        lay.addWidget(widget)
-        lay.addStretch(1)
+        lay.addWidget(widget, 1)
         return container
 
 
@@ -189,7 +220,7 @@ class FrfInputPage(QWidget):
 
         self._sim_mass = QLineEdit("8.0")
         self._sim_stiff = QLineEdit("1e6")
-        self._sim_damp = QLineEdit("0.0")
+        self._sim_damp = QLineEdit("0.02")
         self._sim_fs = QLineEdit("8000")
         self._sim_T = QLineEdit("0.2")
         self._sim_hammer_force = QLineEdit("50.0")
@@ -197,9 +228,9 @@ class FrfInputPage(QWidget):
 
         sim_form.addRow("Mass (kg)", self._sim_mass)
         sim_form.addRow("Stiffness (N/m)", self._sim_stiff)
-        sim_form.addRow("Damping", self._sim_damp)
+        sim_form.addRow("Damping ratio (ζ)", self._sim_damp)
         sim_form.addRow("fs (Hz)", self._sim_fs)
-        sim_form.addRow("T (s)", self._sim_T)
+        sim_form.addRow("Measurement duration (s)", self._sim_T)
         sim_form.addRow("Hammer force (N)", self._sim_hammer_force)
         sim_form.addRow("Hammer bandwidth (Hz)", self._sim_hammer_bw)
 
@@ -208,6 +239,21 @@ class FrfInputPage(QWidget):
 
         self._sim_box.setEnabled(False)
         self._on_mode_changed()
+
+        # Ensure manual edits are reflected in the model before running.
+        # (Previously we only synced on browse + mode toggle, so typed values were ignored.)
+        for le in [
+            self._x_path,
+            self._y_path,
+            self._sim_mass,
+            self._sim_stiff,
+            self._sim_damp,
+            self._sim_fs,
+            self._sim_T,
+            self._sim_hammer_force,
+            self._sim_hammer_bw,
+        ]:
+            le.editingFinished.connect(self._sync_model_from_ui)
 
     def set_default_load_dir(self, path: str) -> None:
         self._default_load_dir = path or ""
@@ -254,6 +300,10 @@ class FrfResultsPage(QWidget):
         self._model = model
         self._last_x: Optional[_DirectionalFrfResult] = None
         self._last_y: Optional[_DirectionalFrfResult] = None
+        self._last_proc_x: Optional[_DirectionalProcessing] = None
+        self._last_proc_y: Optional[_DirectionalProcessing] = None
+        self._last_raw_x: Optional[Dict[int, np.ndarray]] = None
+        self._last_raw_y: Optional[Dict[int, np.ndarray]] = None
         self._last_run_meta: Dict[str, Any] = {}
 
         layout = QVBoxLayout(self)
@@ -271,6 +321,39 @@ class FrfResultsPage(QWidget):
         self._tabs = QTabWidget()
         self._tab_bode_disp = MatplotlibFigureWidget()
         self._tab_bode_accel = MatplotlibFigureWidget()
+        self._tab_time_steps = MatplotlibFigureWidget()
+        self._time_steps_mode = "force_x"
+        self._time_steps_mode_combo = QComboBox()
+        self._time_steps_mode_combo.addItem("Force (X)", userData="force_x")
+        self._time_steps_mode_combo.addItem("Response (X)", userData="resp_x")
+        self._time_steps_mode_combo.addItem("Force (Y)", userData="force_y")
+        self._time_steps_mode_combo.addItem("Response (Y)", userData="resp_y")
+        self._time_steps_mode_combo.currentIndexChanged.connect(self._on_time_steps_mode_changed)
+
+        time_steps_container = QWidget()
+        time_steps_layout = QVBoxLayout(time_steps_container)
+        time_steps_layout.setContentsMargins(0, 0, 0, 0)
+        # Combo at top-right (simple alignment via an inner row)
+        combo_row = QWidget()
+        combo_row_l = QVBoxLayout(combo_row)
+        combo_row_l.setContentsMargins(0, 0, 0, 0)
+        combo_row_l.setAlignment(Qt.AlignmentFlag.AlignRight)
+        combo_row_l.addWidget(self._time_steps_mode_combo)
+        time_steps_layout.addWidget(combo_row)
+        time_steps_layout.addWidget(self._tab_time_steps, 1)
+
+        self._tab_fft_mag = MatplotlibFigureWidget()
+        self._tab_coherence = MatplotlibFigureWidget()
+        self._tab_force_psd = MatplotlibFigureWidget()
+        self._tab_real_frf = MatplotlibFigureWidget()
+        self._tab_raw_mosaic = MatplotlibFigureWidget()
+
+        self._tabs.addTab(self._tab_raw_mosaic, "Raw signals (mosaic)")
+        self._tabs.addTab(time_steps_container, "Time signals (processing steps)")
+        self._tabs.addTab(self._tab_fft_mag, "FFT magnitude")
+        self._tabs.addTab(self._tab_coherence, "Coherence")
+        self._tabs.addTab(self._tab_force_psd, "Force PSD")
+        self._tabs.addTab(self._tab_real_frf, "Real(FRF)")
         self._tabs.addTab(self._tab_bode_disp, "Bode (displacement/force)")
         self._tabs.addTab(self._tab_bode_accel, "Bode (acceleration/force)")
         layout.addWidget(self._tabs, 1)
@@ -302,8 +385,8 @@ class FrfResultsPage(QWidget):
             directional = load_data.load_directional_data(exp_cfg, sens)
 
             # Compute x and y FRFs if available; then plot combined where possible.
-            x_res = self._compute_directional(directional.get("x"), direction="x")
-            y_res = self._compute_directional(directional.get("y"), direction="y")
+            x_res, x_proc = self._compute_directional(directional.get("x"), direction="x")
+            y_res, y_proc = self._compute_directional(directional.get("y"), direction="y")
 
             self._last_x = (
                 _DirectionalFrfResult(direction="x", compliance=x_res[0], accelerance=x_res[1]) if x_res else None
@@ -311,6 +394,12 @@ class FrfResultsPage(QWidget):
             self._last_y = (
                 _DirectionalFrfResult(direction="y", compliance=y_res[0], accelerance=y_res[1]) if y_res else None
             )
+            self._last_proc_x = x_proc
+            self._last_proc_y = y_proc
+
+            self._last_raw_x = dict(directional.get("x", {}).get("channels", {}) or {}) if directional.get("x") else None
+            self._last_raw_y = dict(directional.get("y", {}).get("channels", {}) or {}) if directional.get("y") else None
+
             self._last_run_meta = {
                 "analysis_type": "frf",
                 "data_source": self._model.data_source,
@@ -319,6 +408,19 @@ class FrfResultsPage(QWidget):
                 "simulation": dict(self._model.simulation or {}),
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             }
+
+            self._plot_raw_mosaic(self._tab_raw_mosaic, x_channels=self._last_raw_x, y_channels=self._last_raw_y)
+            self._refresh_time_steps_controls()
+            self._plot_time_processing_steps(
+                self._tab_time_steps,
+                x_proc=self._last_proc_x,
+                y_proc=self._last_proc_y,
+                mode=self._time_steps_mode,
+            )
+            self._plot_fft_magnitude(self._tab_fft_mag, x_proc=self._last_proc_x, y_proc=self._last_proc_y)
+            self._plot_coherence(self._tab_coherence, x_proc=self._last_proc_x, y_proc=self._last_proc_y)
+            self._plot_force_psd(self._tab_force_psd, x_proc=self._last_proc_x, y_proc=self._last_proc_y)
+            self._plot_real_frf(self._tab_real_frf, x_res=x_res, y_res=y_res)
 
             self._plot_bode(
                 self._tab_bode_disp,
@@ -336,6 +438,56 @@ class FrfResultsPage(QWidget):
             )
         except Exception as e:
             QMessageBox.critical(self, "FRF run failed", str(e))
+
+    def _refresh_time_steps_controls(self) -> None:
+        """
+        Enable only the dropdown modes that have data available.
+        """
+        has_x = self._last_proc_x is not None
+        has_y = self._last_proc_y is not None
+
+        def set_enabled(user_data: str, enabled: bool) -> None:
+            for i in range(self._time_steps_mode_combo.count()):
+                if self._time_steps_mode_combo.itemData(i) == user_data:
+                    self._time_steps_mode_combo.model().item(i).setEnabled(enabled)  # type: ignore[union-attr]
+                    return
+
+        set_enabled("force_x", has_x)
+        set_enabled("resp_x", has_x)
+        set_enabled("force_y", has_y)
+        set_enabled("resp_y", has_y)
+
+        # Pick a sensible default if current selection is disabled
+        valid_order = ["force_x", "resp_x", "force_y", "resp_y"]
+        if (self._time_steps_mode in ["force_x", "resp_x"] and not has_x) or (
+            self._time_steps_mode in ["force_y", "resp_y"] and not has_y
+        ):
+            for cand in valid_order:
+                if (cand in ["force_x", "resp_x"] and has_x) or (cand in ["force_y", "resp_y"] and has_y):
+                    self._time_steps_mode = cand
+                    break
+
+        # Sync combo selection to mode
+        for i in range(self._time_steps_mode_combo.count()):
+            if self._time_steps_mode_combo.itemData(i) == self._time_steps_mode:
+                self._time_steps_mode_combo.blockSignals(True)
+                try:
+                    self._time_steps_mode_combo.setCurrentIndex(i)
+                finally:
+                    self._time_steps_mode_combo.blockSignals(False)
+                break
+
+    def _on_time_steps_mode_changed(self) -> None:
+        mode = self._time_steps_mode_combo.currentData()
+        if not isinstance(mode, str) or not mode:
+            return
+        self._time_steps_mode = mode
+        self._plot_time_processing_steps(
+            self._tab_time_steps,
+            x_proc=self._last_proc_x,
+            y_proc=self._last_proc_y,
+            mode=self._time_steps_mode,
+        )
 
     def export_results(self, analysis_folder: Path) -> dict:
         """
@@ -448,9 +600,12 @@ class FrfResultsPage(QWidget):
         self,
         data: Optional[Dict[str, Any]],
         direction: str,
-    ) -> Optional[Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]]:
+    ) -> Tuple[
+        Optional[Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]],
+        Optional[_DirectionalProcessing],
+    ]:
         if data is None:
-            return None
+            return None, None
 
         # Heuristic: prefer configured names if present, else fall back.
         # For config-driven pipeline, expected: F_x/F_y and x_tool/y_tool exist when sensors available.
@@ -467,9 +622,418 @@ class FrfResultsPage(QWidget):
         u = np.asarray(data[u_name], dtype=float)
         y_accel = np.asarray(data[y_name], dtype=float)  # treated as acceleration
 
-        f, H_accel = frf_estimation.compute_frf_from_signals(time, u, y_accel, frf_estimation.get_system_parameters())
+        params = frf_estimation.get_system_parameters()
+        f, H_accel = frf_estimation.compute_frf_from_signals(time, u, y_accel, params)
         H_disp = accel_to_disp_over_force(f, H_accel)
-        return (f, H_disp), (f, H_accel)
+
+        proc = self._compute_processing_steps(time=time, u=u, resp=y_accel, direction=direction, params=params)
+        return ((f, H_disp), (f, H_accel)), proc
+
+    @staticmethod
+    def _compute_processing_steps(
+        *,
+        time: np.ndarray,
+        u: np.ndarray,
+        resp: np.ndarray,
+        direction: str,
+        params: Dict[str, Any],
+    ) -> _DirectionalProcessing:
+        time = np.asarray(time, dtype=float)
+        u = np.asarray(u, dtype=float)
+        resp = np.asarray(resp, dtype=float)
+
+        if len(time) < 2:
+            raise ValueError("Not enough samples to compute processing steps")
+        dt = float(time[1] - time[0])
+        fs = 1.0 / dt
+
+        bias_n = int(params.get("bias_window_size", 0) or 0)
+        u_bias, u_bias_idx, u_bias_actual = signal_processing.remove_bias_window(u, bias_n)
+        r_bias, r_bias_idx, r_bias_actual = signal_processing.remove_bias_window(resp, bias_n)
+
+        u_steps: List[_SignalStep] = [_SignalStep("raw", u), _SignalStep("bias_corrected", u_bias)]
+        r_steps: List[_SignalStep] = [_SignalStep("raw", resp), _SignalStep("bias_corrected", r_bias)]
+
+        # Windowing (use the canonical implementation from frf_estimation to support all configured types)
+        win_u_type = params.get("input_window_type", "hann")
+        win_r_type = params.get("output_window_type", "hann")
+        window_u, _meta_u = frf_estimation.create_window(u_bias, time, params, dt, window_type=win_u_type)
+        window_r, _meta_r = frf_estimation.create_window(r_bias, time, params, dt, window_type=win_r_type)
+
+        u_steps.append(_SignalStep("window", window_u))
+        r_steps.append(_SignalStep("window", window_r))
+        u_win = u_bias * window_u
+        r_win = r_bias * window_r
+        u_steps.append(_SignalStep("windowed", u_win))
+        r_steps.append(_SignalStep("windowed", r_win))
+
+        # Filtering steps (for visualization; follow toggles from params)
+        # Wiener
+        if bool(params.get("wiener_filter", False)):
+            noise_u = signal_processing.calculate_noise_power_from_window(u, u_bias_idx, u_bias_actual)
+            noise_r = signal_processing.calculate_noise_power_from_window(resp, r_bias_idx, r_bias_actual)
+            u_wien = signal_processing.apply_wiener_filter_legacy(u_bias, noise_u, u_bias_actual)
+            r_wien = signal_processing.apply_wiener_filter_legacy(r_bias, noise_r, r_bias_actual)
+            u_steps.append(_SignalStep("wiener", u_wien))
+            r_steps.append(_SignalStep("wiener", r_wien))
+
+        # SavGol
+        if bool(params.get("savgol_filter", False)):
+            wl = int(params.get("savgol_window_length", 0) or 0)
+            po = int(params.get("savgol_polyorder", 0) or 0)
+            u_sg = signal_processing.apply_savgol_filter(u_bias, wl, po)
+            r_sg = signal_processing.apply_savgol_filter(r_bias, wl, po)
+            u_steps.append(_SignalStep("savgol", u_sg))
+            r_steps.append(_SignalStep("savgol", r_sg))
+
+        # Lowpass (Bessel legacy behaviour exists in signal_processing)
+        if bool(params.get("lowpass_filter", False)):
+            bw = float(params.get("lowpass_bandwidth_hz", 0.0) or 0.0)
+            u_lp = signal_processing.apply_lowpass_filter_bessel(u_bias, bw, fs)
+            r_lp = signal_processing.apply_lowpass_filter_bessel(r_bias, bw, fs)
+            u_steps.append(_SignalStep(f"lowpass_{bw:g}Hz", u_lp))
+            r_steps.append(_SignalStep(f"lowpass_{bw:g}Hz", r_lp))
+
+        # Welch grid diagnostics (force PSD + coherence between u and response)
+        nperseg = int(params.get("welch_nperseg", 2048) or 2048)
+        nperseg = max(2, min(nperseg, len(u_bias), len(r_bias)))
+        noverlap = int(params.get("welch_noverlap", nperseg // 2) or (nperseg // 2))
+        noverlap = max(0, min(noverlap, nperseg - 1))
+        welch_window = params.get("welch_window", "hamming")
+
+        f_welch, Puu = signal.welch(u_bias, fs=fs, nperseg=nperseg, noverlap=noverlap, window=welch_window)
+        f2, Prr = signal.welch(r_bias, fs=fs, nperseg=nperseg, noverlap=noverlap, window=welch_window)
+        f3, Pur = signal.csd(u_bias, r_bias, fs=fs, nperseg=nperseg, noverlap=noverlap, window=welch_window)
+        if not (np.allclose(f_welch, f2) and np.allclose(f_welch, f3)):
+            # Align to force grid defensively
+            Prr = np.interp(f_welch, f2, Prr)
+            Pur = np.interp(f_welch, f3, np.real(Pur)) + 1j * np.interp(f_welch, f3, np.imag(Pur))
+
+        denom = (Puu * Prr) + 1e-30
+        coh = np.abs(Pur) ** 2 / denom
+        coh = np.clip(coh, 0.0, 1.0)
+
+        # FFT magnitude (separate plot): show for a few key steps
+        fft_n = len(time)
+        fft_f = np.fft.rfftfreq(fft_n, d=dt)
+
+        def _mag(x: np.ndarray) -> np.ndarray:
+            return np.abs(np.fft.rfft(np.asarray(x, dtype=float), n=fft_n))
+
+        # Always include raw, bias_corrected, windowed, and last filtered if present
+        pick_names = ["raw", "bias_corrected", "windowed"]
+        last_u = u_steps[-1].name if u_steps else "raw"
+        last_r = r_steps[-1].name if r_steps else "raw"
+        for nm in [last_u, last_r]:
+            if nm not in pick_names:
+                pick_names.append(nm)
+
+        fft_u_mag: Dict[str, np.ndarray] = {}
+        fft_r_mag: Dict[str, np.ndarray] = {}
+        u_by_name = {s.name: s.y for s in u_steps}
+        r_by_name = {s.name: s.y for s in r_steps}
+        for nm in pick_names:
+            if nm in u_by_name and nm not in fft_u_mag:
+                fft_u_mag[nm] = _mag(u_by_name[nm])
+            if nm in r_by_name and nm not in fft_r_mag:
+                fft_r_mag[nm] = _mag(r_by_name[nm])
+
+        return _DirectionalProcessing(
+            direction=direction,
+            time=time,
+            fs_hz=float(fs),
+            u_steps=u_steps,
+            resp_steps=r_steps,
+            window=None,  # window already included as a step; keep None to avoid duplication
+            f_hz=np.asarray(f_welch, dtype=float),
+            psd_u=np.asarray(Puu, dtype=float),
+            coherence_uy=np.asarray(coh, dtype=float),
+            fft_f_hz=np.asarray(fft_f, dtype=float),
+            fft_u_mag=fft_u_mag,
+            fft_resp_mag=fft_r_mag,
+        )
+
+    @staticmethod
+    def _enable_legend_toggles(fig) -> None:
+        """
+        Click legend entries to show/hide corresponding lines (per-figure).
+        """
+        try:
+            canvas = fig.canvas
+        except Exception:
+            return
+
+        # Keep a mapping on the figure so the callback can find it after redraws.
+        fig._legend_pick_map = {}  # type: ignore[attr-defined]
+
+        def _rebuild_map():
+            m = {}
+            for ax in fig.axes:
+                leg = ax.get_legend()
+                if leg is None:
+                    continue
+                for leg_line, orig_line in zip(leg.get_lines(), ax.get_lines()):
+                    leg_line.set_picker(True)
+                    leg_line.set_pickradius(5)
+                    m[leg_line] = orig_line
+            fig._legend_pick_map = m  # type: ignore[attr-defined]
+
+        def _on_pick(event):
+            m = getattr(fig, "_legend_pick_map", {})
+            artist = getattr(event, "artist", None)
+            if artist not in m:
+                return
+            line = m[artist]
+            vis = not line.get_visible()
+            line.set_visible(vis)
+            artist.set_alpha(1.0 if vis else 0.2)
+            canvas.draw_idle()
+
+        _rebuild_map()
+        # Connect once per plot call (safe: mpl_connect returns id, but we don't need disconnect for now)
+        canvas.mpl_connect("pick_event", _on_pick)
+
+    def _plot_raw_mosaic(
+        self,
+        widget: MatplotlibFigureWidget,
+        *,
+        x_channels: Optional[Dict[int, np.ndarray]],
+        y_channels: Optional[Dict[int, np.ndarray]],
+    ) -> None:
+        fig = widget.figure
+        fig.clear()
+
+        def has_any(ch: Optional[Dict[int, np.ndarray]]) -> bool:
+            return bool(ch) and any(isinstance(v, np.ndarray) and len(v) for v in ch.values())
+
+        has_x = has_any(x_channels)
+        has_y = has_any(y_channels)
+        if not has_x and not has_y:
+            ax = fig.add_subplot(1, 1, 1)
+            ax.text(0.5, 0.5, "No raw channels available (simulation mode or missing channels).", ha="center", va="center")
+            ax.set_axis_off()
+            widget.redraw()
+            return
+
+        n_rows = 8
+        n_cols = 2 if (has_x and has_y) else 1
+
+        axes = []
+        for r in range(n_rows):
+            for c in range(n_cols):
+                idx = r * n_cols + c + 1
+                axes.append(fig.add_subplot(n_rows, n_cols, idx, sharex=axes[0] if axes else None))
+
+        def plot_col(ch: Dict[int, np.ndarray], col: int, title_prefix: str) -> None:
+            for i in range(8):
+                ax = axes[i * n_cols + col]
+                y = np.asarray(ch.get(i, np.zeros(0)), dtype=float)
+                if len(y) == 0:
+                    ax.text(0.5, 0.5, f"A{i}: missing", ha="center", va="center", fontsize=8)
+                    ax.set_axis_off()
+                    continue
+                ax.plot(y, linewidth=0.9)
+                ax.grid(True, alpha=0.25)
+                ax.set_ylabel(f"A{i}", rotation=0, labelpad=14, fontsize=8)
+                if i == 0:
+                    ax.set_title(f"{title_prefix} raw channels (index plot)", fontsize=10)
+                if i != 7:
+                    ax.tick_params(labelbottom=False)
+
+        if has_x and x_channels is not None:
+            plot_col(x_channels, 0, "X")
+        if has_y and y_channels is not None:
+            plot_col(y_channels, 1 if (has_x and has_y) else 0, "Y")
+
+        widget.redraw()
+
+    def _plot_time_processing_steps(
+        self,
+        widget: MatplotlibFigureWidget,
+        *,
+        x_proc: Optional[_DirectionalProcessing],
+        y_proc: Optional[_DirectionalProcessing],
+        mode: str,
+    ) -> None:
+        fig = widget.figure
+        fig.clear()
+
+        has_x = x_proc is not None
+        has_y = y_proc is not None
+        if not has_x and not has_y:
+            ax = fig.add_subplot(1, 1, 1)
+            ax.text(0.5, 0.5, "No processing data available.", ha="center", va="center")
+            ax.set_axis_off()
+            widget.redraw()
+            return
+
+        ax = fig.add_subplot(1, 1, 1)
+        ax.grid(True, alpha=0.25)
+        ax.set_xlabel("Time (s)")
+
+        # Plot helper
+        def add_steps(ax, t: np.ndarray, steps: List[_SignalStep], prefix: str) -> None:
+            for s in steps:
+                line = ax.plot(t, s.y, linewidth=1.0, label=f"{prefix}{s.name}")[0]
+                line.set_visible(s.name in {"raw", "bias_corrected", "windowed"})
+
+        title_map = {
+            "force_x": "Force (X) processing steps",
+            "resp_x": "Response (X) processing steps",
+            "force_y": "Force (Y) processing steps",
+            "resp_y": "Response (Y) processing steps",
+        }
+
+        if mode == "force_x" and x_proc is not None:
+            add_steps(ax, x_proc.time, x_proc.u_steps, prefix="Fx:")
+            ax.set_ylabel("Force (N)")
+        elif mode == "resp_x" and x_proc is not None:
+            add_steps(ax, x_proc.time, x_proc.resp_steps, prefix="x:")
+            ax.set_ylabel("Response (m/s²)")
+        elif mode == "force_y" and y_proc is not None:
+            add_steps(ax, y_proc.time, y_proc.u_steps, prefix="Fy:")
+            ax.set_ylabel("Force (N)")
+        elif mode == "resp_y" and y_proc is not None:
+            add_steps(ax, y_proc.time, y_proc.resp_steps, prefix="y:")
+            ax.set_ylabel("Response (m/s²)")
+        else:
+            # Fallback if mode doesn't match available data
+            if x_proc is not None:
+                add_steps(ax, x_proc.time, x_proc.u_steps, prefix="Fx:")
+                ax.set_ylabel("Force (N)")
+                mode = "force_x"
+            elif y_proc is not None:
+                add_steps(ax, y_proc.time, y_proc.u_steps, prefix="Fy:")
+                ax.set_ylabel("Force (N)")
+                mode = "force_y"
+
+        ax.set_title(f"{title_map.get(mode, 'Processing steps')} (click legend to toggle)")
+        ax.legend(loc="upper right", fontsize=8)
+
+        self._enable_legend_toggles(fig)
+        widget.redraw()
+
+    def _plot_fft_magnitude(
+        self,
+        widget: MatplotlibFigureWidget,
+        *,
+        x_proc: Optional[_DirectionalProcessing],
+        y_proc: Optional[_DirectionalProcessing],
+    ) -> None:
+        fig = widget.figure
+        fig.clear()
+        ax = fig.add_subplot(1, 1, 1)
+        ax.set_title("FFT magnitude (click legend to toggle)")
+        ax.set_xlabel("Frequency (Hz)")
+        ax.set_ylabel("|FFT| (arb.)")
+        ax.grid(True, which="both", alpha=0.25)
+        ax.set_yscale("log")
+        ax.set_xscale("log")
+
+        def add(proc: _DirectionalProcessing, prefix: str) -> None:
+            f = proc.fft_f_hz
+            for name, mag in proc.fft_u_mag.items():
+                ax.plot(f[1:], mag[1:], linewidth=1.0, label=f"{prefix}u:{name}")
+            for name, mag in proc.fft_resp_mag.items():
+                ax.plot(f[1:], mag[1:], linewidth=1.0, label=f"{prefix}resp:{name}")
+
+        if x_proc is not None:
+            add(x_proc, "X:")
+        if y_proc is not None:
+            add(y_proc, "Y:")
+
+        ax.legend(loc="best", fontsize=8)
+        self._enable_legend_toggles(fig)
+        widget.redraw()
+
+    def _plot_coherence(
+        self,
+        widget: MatplotlibFigureWidget,
+        *,
+        x_proc: Optional[_DirectionalProcessing],
+        y_proc: Optional[_DirectionalProcessing],
+    ) -> None:
+        fig = widget.figure
+        fig.clear()
+        ax = fig.add_subplot(1, 1, 1)
+        ax.set_title("Coherence γ²(f)")
+        ax.set_xlabel("Frequency (Hz)")
+        ax.set_ylabel("γ²")
+        ax.set_ylim(0.0, 1.05)
+        ax.grid(True, which="both", alpha=0.25)
+        ax.set_xscale("log")
+        ax.axhline(0.7, linestyle="--", linewidth=1, alpha=0.6, color="red", label="threshold 0.7")
+
+        if x_proc is not None:
+            ax.plot(x_proc.f_hz[1:], x_proc.coherence_uy[1:], linewidth=1.6, label="X")
+        if y_proc is not None:
+            ax.plot(y_proc.f_hz[1:], y_proc.coherence_uy[1:], linewidth=1.6, label="Y")
+
+        ax.legend(loc="best")
+        widget.redraw()
+
+    def _plot_force_psd(
+        self,
+        widget: MatplotlibFigureWidget,
+        *,
+        x_proc: Optional[_DirectionalProcessing],
+        y_proc: Optional[_DirectionalProcessing],
+    ) -> None:
+        fig = widget.figure
+        fig.clear()
+        ax = fig.add_subplot(1, 1, 1)
+        ax.set_title("Force PSD (Welch)")
+        ax.set_xlabel("Frequency (Hz)")
+        ax.set_ylabel("PSD (N²/Hz)")
+        ax.grid(True, which="both", alpha=0.25)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+
+        if x_proc is not None:
+            ax.plot(x_proc.f_hz[1:], x_proc.psd_u[1:], linewidth=1.6, label="X")
+        if y_proc is not None:
+            ax.plot(y_proc.f_hz[1:], y_proc.psd_u[1:], linewidth=1.6, label="Y")
+
+        ax.legend(loc="best")
+        widget.redraw()
+
+    def _plot_real_frf(
+        self,
+        widget: MatplotlibFigureWidget,
+        *,
+        x_res: Optional[Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]],
+        y_res: Optional[Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]],
+    ) -> None:
+        fig = widget.figure
+        fig.clear()
+        ax1 = fig.add_subplot(2, 1, 1)
+        ax2 = fig.add_subplot(2, 1, 2, sharex=ax1)
+
+        ax1.set_title("Real(FRF)")
+        ax1.set_ylabel("Re{Compliance} (m/N)")
+        ax2.set_ylabel("Re{Accelerance} ((m/s²)/N)")
+        ax2.set_xlabel("Frequency (Hz)")
+        for ax in [ax1, ax2]:
+            ax.grid(True, which="both", alpha=0.25)
+            ax.set_xscale("log")
+
+        def add(ax, res, label: str):
+            f, H = res
+            f = np.asarray(f)
+            H = np.asarray(H)
+            mask = np.isfinite(f) & np.isfinite(np.real(H)) & (f > 0)
+            ax.plot(f[mask], np.real(H[mask]), linewidth=1.6, label=label)
+
+        if x_res is not None:
+            add(ax1, x_res[0], "X")
+            add(ax2, x_res[1], "X")
+        if y_res is not None:
+            add(ax1, y_res[0], "Y")
+            add(ax2, y_res[1], "Y")
+
+        ax1.legend(loc="best")
+        ax2.legend(loc="best")
+        widget.redraw()
 
     @staticmethod
     def _plot_bode(

@@ -90,3 +90,36 @@ run_frf_pipeline(tmp, Path("config/sensitivities.json"))
 ```
 **Gotchas:** Welch settings must be valid for short signals; `compute_frf_from_signals()` clamps `nperseg/noverlap` for robustness.
 **Last used:** 2026-04-22
+
+---
+
+## Matplotlib trace toggles in FRF GUI
+**When to use:** You have multiple overlaid traces in a `MatplotlibFigureWidget` (Qt GUI) and want users to select/deselect lines without building extra Qt controls.
+**Pattern:**
+```python
+# After plotting lines and creating legends:
+for ax in fig.axes:
+    leg = ax.get_legend()
+    if leg is None:
+        continue
+    for leg_line, orig_line in zip(leg.get_lines(), ax.get_lines()):
+        leg_line.set_picker(True)
+        leg_line.set_pickradius(5)
+        pick_map[leg_line] = orig_line
+
+def on_pick(event):
+    line = pick_map.get(event.artist)
+    if line is None:
+        return
+    visible = not line.get_visible()
+    line.set_visible(visible)
+    event.artist.set_alpha(1.0 if visible else 0.2)
+    fig.canvas.draw_idle()
+
+fig.canvas.mpl_connect("pick_event", on_pick)
+```
+**Gotchas:**
+- Build the legend after plotting lines; otherwise there’s nothing to pick.
+- If you clear/redraw the figure, rebuild the pick-map (the old artists are gone).
+- Keep labels unique enough (prefix with `X:` / `Y:`) so the legend remains readable.
+**Last used:** 2026-04-22 (FRF GUI intermediate plots)

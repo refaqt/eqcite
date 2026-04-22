@@ -42,3 +42,29 @@ Lightweight log of **non-obvious** technical choices. Add an entry when picking 
 **Consequences:**
 - Defaults become per-user/per-workstation (appropriate for wiring and local calibration), while experiment configs remain shareable templates.
 - `app_settings.json` now includes more than folder paths, but remains a single place for user preferences.
+
+## Simulation config `model.damping` means damping ratio ζ — 2026-04-22
+**Context:** The simulation config key `simulation.model.damping` was being interpreted as a damping coefficient \(c\) (N·s/m) in `src/simulate_system.py`, but users expect to specify a damping ratio ζ (dimensionless) when configuring a mass-spring-damper model.
+
+**Decision:** Treat `simulation.model.damping` as **damping ratio ζ** and derive the damping coefficient internally as \(c = 2\,\zeta\,\sqrt{k m}\) (equivalently \(2 m \omega_n \zeta\)). Default to ζ=0.02 when the key is omitted.
+
+**Alternatives considered:**
+- Add a new key `model.damping_ratio` while keeping `model.damping` as coefficient \(c\) for backward compatibility.
+- Keep accepting \(c\) and rename the key to `model.damping_coeff`.
+
+**Consequences:**
+- This is a **semantic breaking change** for anyone who previously supplied \(c\) under `model.damping`.
+- The simulation configuration matches typical vibration/controls practice (ζ is easier to specify and compare across systems).
+
+## Toggle FRF GUI traces via Matplotlib legend picking — 2026-04-22
+**Context:** We want to show raw signals and multiple processing steps (bias/window/filter variants) in the FRF GUI without adding extra plotting dependencies, and still allow users to interactively select/deselect traces.
+
+**Decision:** Use **Matplotlib legend click toggling** (pick events) in the embedded Qt figures (see `src/gui/pages/frf.py`) so clicking a legend entry hides/shows the corresponding trace (with alpha change on the legend item).
+
+**Alternatives considered:**
+- Adding a dedicated Qt trace checklist UI next to each plot (more widgets + more state to keep in sync)
+- Switching to a different plotting library with built-in trace toggles (larger dependency/architecture change)
+
+**Consequences:**
+- Keeps the GUI lightweight and consistent with existing Matplotlib embedding.
+- Requires re-wiring pick handlers after re-plotting, but avoids building a parallel UI for visibility state.

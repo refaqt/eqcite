@@ -38,7 +38,7 @@ class SimulationParameters:
         # Mass-Spring-Damper parameters
         self.mass = 8.0                                                 # Mass (kg)
         self.stiffness = 1e6                                            # Spring stiffness (N/m)
-        self.damping = 0.02 * 2 * np.sqrt(self.stiffness * self.mass)    # Damping coefficient (N·s/m)
+        self.damping_ratio = 0.02                                       # Damping ratio ζ (dimensionless)
         
         # Hammer parameters
         self.hammer_force = 50  # Hammer force magnitude (N)
@@ -56,10 +56,16 @@ class SimulationParameters:
         omega_n = np.sqrt(self.stiffness / self.mass)
         return omega_n / (2 * np.pi)
     
-    def get_damping_ratio(self):
-        """Calculate damping ratio (dimensionless)."""
-        omega_n = np.sqrt(self.stiffness / self.mass)
-        return self.damping / (2 * self.mass * omega_n)
+    def get_damping_coefficient(self) -> float:
+        """Return damping coefficient c (N·s/m) derived from ζ, k, m."""
+        zeta = float(self.damping_ratio)
+        if zeta < 0.0:
+            raise ValueError("damping_ratio (ζ) must be >= 0")
+        return 2.0 * zeta * np.sqrt(float(self.stiffness) * float(self.mass))
+
+    def get_damping_ratio(self) -> float:
+        """Return damping ratio ζ (dimensionless)."""
+        return float(self.damping_ratio)
 
 
 def simulate_msd_time_series(params: SimulationParameters) -> dict:
@@ -92,11 +98,11 @@ def simulate_two_axis_system(sim_cfg: dict) -> dict:
 
     Expected keys (with defaults if missing):
       - fs (Hz), T (s)
-      - model: {mass, stiffness, damping}
+      - model: {mass, stiffness, damping} where damping is damping ratio ζ (dimensionless)
       - hammer: {force, bandwidth_hz}
 
     Returns:
-      dict with time, fs, dt, F_x, F_y, x, y, x_ddot, y_ddot
+      dict with time, fs, dt, F_x, F_y, x, y, x_ddot, y_ddot, and `meta`
     """
     p = SimulationParameters()
     p.fs = float(sim_cfg.get("fs", p.fs))
@@ -109,10 +115,9 @@ def simulate_two_axis_system(sim_cfg: dict) -> dict:
     if "stiffness" in model:
         p.stiffness = float(model["stiffness"])
     if "damping" in model:
-        p.damping = float(model["damping"])
+        p.damping_ratio = float(model["damping"])
     else:
-        # Keep current default relationship if not provided explicitly
-        p.damping = 0.02 * 2 * np.sqrt(p.stiffness * p.mass)
+        p.damping_ratio = 0.02
 
     hammer = sim_cfg.get("hammer", {})
     if "force" in hammer:
@@ -134,6 +139,12 @@ def simulate_two_axis_system(sim_cfg: dict) -> dict:
         "y": sim_y["x"],
         "x_ddot": sim_x["x_ddot"],
         "y_ddot": sim_y["x_ddot"],
+        "meta": {
+            "damping_ratio": p.get_damping_ratio(),
+            "damping_coefficient": p.get_damping_coefficient(),
+            "mass": float(p.mass),
+            "stiffness": float(p.stiffness),
+        },
     }
 
 
@@ -266,7 +277,7 @@ def simulate_msd_system(time, force, params):
     N = len(time)
     T = params.dt  # Sampling period
     m = params.mass
-    c = params.damping
+    c = params.get_damping_coefficient()
     k = params.stiffness
     
     # Calculate discrete transfer function coefficients using bilinear transform
@@ -593,9 +604,9 @@ def print_system_info(params):
     print("\nSystem Parameters:")
     print(f"  Mass (m):                {params.mass:.2f} kg")
     print(f"  Stiffness (k):           {params.stiffness:.0f} N/m")
-    print(f"  Damping (c):             {params.damping:.2f} N·s/m")
+    print(f"  Damping ratio (ζ):       {params.get_damping_ratio():.4f}")
+    print(f"  Damping (c):             {params.get_damping_coefficient():.2f} N·s/m")
     print(f"  Natural frequency:       {params.get_natural_frequency():.2f} Hz")
-    print(f"  Damping ratio:           {params.get_damping_ratio():.4f}")
     print("\nExcitation Parameters:")
     print(f"  Hammer force:            {params.hammer_force:.1f} N")
     print(f"  Hammer bandwidth:        {params.hammer_bandwidth:.0f} Hz")

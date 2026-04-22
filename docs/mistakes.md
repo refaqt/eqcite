@@ -16,6 +16,7 @@ Log errors, wrong approaches, and **prevention rules** so agents and humans do n
 ---
 
 ## PowerShell pip command used invalid `&&` — 2026-03-20
+**WARNING (repeated):** This mistake has now happened multiple times. Treat `&&` as invalid in this repository’s PowerShell workflow.
 **What happened:** The `venv` dependency install command failed because `&&` is not a valid statement separator in PowerShell in this environment.
 **Root cause:** I used shell-style `&&` chaining instead of PowerShell-safe command chaining.
 **Fix applied:** Re-ran the installation using PowerShell `;` separators and then verified the venv import smoke test.
@@ -52,4 +53,11 @@ Log errors, wrong approaches, and **prevention rules** so agents and humans do n
 **Root cause:** Assumed bash heredoc syntax would work in the current PowerShell environment.
 **Fix applied:** Re-ran the command using `python -c` with an inline script string.
 **Prevention rule:** On Windows/PowerShell, avoid bash heredocs; use `python -c`, a temporary `.py` file, or PowerShell-native piping.
+**Affected files:** None (command-line only)
+
+## Used `cd /d` (cmd syntax) in PowerShell — 2026-04-22
+**What happened:** The GUI launch failed because `cd /d` is `cmd.exe` syntax and PowerShell treated `/d` as an invalid positional parameter.
+**Root cause:** Mixed `cmd.exe` directory-change flags into a PowerShell command.
+**Fix applied:** Switched to PowerShell-native `Set-Location -Path "..."` (or `cd "..."` without `/d`).
+**Prevention rule:** In PowerShell, avoid `cmd.exe`-specific flags like `cd /d`; use `Set-Location` / `cd` with just the path.
 **Affected files:** None (command-line only)

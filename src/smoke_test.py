@@ -36,7 +36,7 @@ def smoke_load_simulation_with_config() -> None:
         "simulation": {
             "fs": 8000,
             "T": 0.2,
-            "model": {"mass": 8.0, "stiffness": 1e6},
+            "model": {"mass": 8.0, "stiffness": 1e6, "damping": 0.02},
             "hammer": {"force": 50.0, "bandwidth_hz": 1000.0},
         },
     }
@@ -48,6 +48,12 @@ def smoke_load_simulation_with_config() -> None:
         assert d["time"] is not None
         assert "F_x" in d and "F_y" in d
         assert "x_tool" in d and "y_tool" in d
+
+    # Validate semantic: config damping is damping ratio ζ (dimensionless).
+    from . import simulate_system
+
+    sim = simulate_system.simulate_two_axis_system(exp_cfg["simulation"])
+    assert abs(sim["meta"]["damping_ratio"] - 0.02) < 1e-12
 
 
 def run() -> None:

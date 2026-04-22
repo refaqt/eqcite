@@ -187,7 +187,7 @@ For quick development/testing without measurement files:
   - `analysis_type: "frf"`
   - `simulation`: a dict with (example):
     - `fs`, `T`
-    - `model: {mass, stiffness, damping}` (damping optional; default is derived)
+    - `model: {mass, stiffness, damping}` where `damping` is **damping ratio** ζ (dimensionless; optional; default ζ=0.02)
     - `hammer: {force, bandwidth_hz}`
 
 Then run `python -m src.main` (with `DEFAULT_CONFIG` pointing at that JSON). This produces synthetic `F_x/F_y` and tool outputs and runs the same FRF computation + plotting.
