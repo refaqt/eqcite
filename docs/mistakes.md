@@ -62,6 +62,13 @@ Log errors, wrong approaches, and **prevention rules** so agents and humans do n
 **Prevention rule:** In PowerShell, avoid `cmd.exe`-specific flags like `cd /d`; use `Set-Location` / `cd` with just the path.
 **Affected files:** None (command-line only)
 
+## Used bash-style heredoc in `git commit` under PowerShell — 2026-04-23
+**What happened:** A `git commit -m "$(cat <<'EOF' ... EOF)"` command failed to parse because the bash heredoc syntax isn’t valid in PowerShell.
+**Root cause:** Reused a bash-oriented commit-message pattern in a PowerShell terminal session.
+**Fix applied:** Re-ran `git commit` using multiple `-m` flags (PowerShell-safe) to provide subject + body.
+**Prevention rule:** In PowerShell terminals, avoid bash heredocs and command substitutions; use PowerShell here-strings or `git commit -m "subject" -m "body"`.
+**Affected files:** None (command-line only)
+
 ## Qt widget instantiated without QApplication — 2026-04-23
 **What happened:** A smoke test tried to instantiate `FrfResultsPage` directly in a Python one-liner, and the process crashed because Qt widgets require an active `QApplication`.
 **Root cause:** Assumed importing the module was enough for a lightweight instantiation test; forgot Qt’s requirement for a running application object.
