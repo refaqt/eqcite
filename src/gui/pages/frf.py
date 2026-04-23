@@ -86,6 +86,8 @@ class _DirectionalProcessing:
 
 class FrfRootPage(QWidget):
     default_sensor_config_save_requested = Signal(dict, dict, dict)
+    default_filtering_save_requested = Signal(dict)
+    file_paths_changed = Signal(str, str)  # (x_path, y_path)
 
     def __init__(self) -> None:
         super().__init__()
@@ -104,15 +106,20 @@ class FrfRootPage(QWidget):
 
         self._page_input = FrfInputPage(self._input_model)
         self._page_sensor = FrfSensorConfigPage(self._input_model)
+        self._page_filtering = FrfFilteringPage()
         self._page_results = FrfResultsPage(self._input_model)
 
         self._page_sensor.default_save_requested.connect(self.default_sensor_config_save_requested)
+        self._page_input.file_paths_changed.connect(self.file_paths_changed)
+        self._page_filtering.default_save_requested.connect(self.default_filtering_save_requested)
+        self._page_filtering.filtering_changed.connect(self._page_results.set_filtering_cfg)
 
         self._stack.addWidget(self._wrap(self._page_input))
         self._stack.addWidget(self._wrap(self._page_sensor))
+        self._stack.addWidget(self._wrap(self._page_filtering))
         self._stack.addWidget(self._wrap(self._page_results))
 
-        for name in ["Input data", "Sensor configuration", "Results"]:
+        for name in ["Input data", "Sensor configuration", "Filtering", "Results"]:
             self._menu.addItem(QListWidgetItem(name))
         self._menu.setCurrentRow(0)
         self._menu.currentRowChanged.connect(self._stack.setCurrentIndex)
@@ -127,8 +134,14 @@ class FrfRootPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(splitter)
 
+        # Ensure the Results page sees the initial filtering config (defaults).
+        self._page_results.set_filtering_cfg(self._page_filtering.build_filtering_cfg())
+
     def set_default_load_dir(self, path: str) -> None:
         self._page_input.set_default_load_dir(path)
+
+    def set_file_paths(self, x_path: str, y_path: str) -> None:
+        self._page_input.set_file_paths(x_path, y_path)
 
     def apply_default_sensor_config(
         self,
@@ -145,6 +158,20 @@ class FrfRootPage(QWidget):
     def export_results(self, analysis_folder: Path) -> dict:
         return self._page_results.export_results(analysis_folder)
 
+    def apply_default_filtering(self, filtering_cfg: Dict[str, Any]) -> None:
+        self._page_filtering.apply_filtering_cfg(dict(filtering_cfg or {}))
+
+    def build_experiment_cfg(self) -> Dict[str, Any]:
+        base = self._page_results._build_experiment_cfg()
+        base["filtering"] = self._page_filtering.build_filtering_cfg()
+        return base
+
+    def apply_experiment_cfg(self, cfg: Dict[str, Any]) -> None:
+        cfg = dict(cfg or {})
+        filt = cfg.get("filtering") or {}
+        if isinstance(filt, dict):
+            self._page_filtering.apply_filtering_cfg(dict(filt))
+
     @staticmethod
     def _wrap(widget: QWidget) -> QWidget:
         container = QWidget()
@@ -155,10 +182,13 @@ class FrfRootPage(QWidget):
 
 
 class FrfInputPage(QWidget):
+    file_paths_changed = Signal(str, str)  # (x_path, y_path)
+
     def __init__(self, model: FrfInputModel) -> None:
         super().__init__()
         self._model = model
         self._default_load_dir = ""
+        self._last_emitted_paths: Tuple[str, str] = ("", "")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -258,6 +288,11 @@ class FrfInputPage(QWidget):
     def set_default_load_dir(self, path: str) -> None:
         self._default_load_dir = path or ""
 
+    def set_file_paths(self, x_path: str, y_path: str) -> None:
+        self._x_path.setText(x_path or "")
+        self._y_path.setText(y_path or "")
+        self._sync_model_from_ui()
+
     def _browse_into(self, line_edit: QLineEdit) -> None:
         p, _ = QFileDialog.getOpenFileName(
             self,
@@ -279,6 +314,10 @@ class FrfInputPage(QWidget):
         self._model.data_source = "simulation" if self._rb_sim.isChecked() else "file"
         self._model.file_path_x = self._x_path.text().strip()
         self._model.file_path_y = self._y_path.text().strip()
+        cur_paths = (self._model.file_path_x, self._model.file_path_y)
+        if cur_paths != self._last_emitted_paths:
+            self._last_emitted_paths = cur_paths
+            self.file_paths_changed.emit(cur_paths[0], cur_paths[1])
         self._model.simulation = {
             "fs": float(self._sim_fs.text()),
             "T": float(self._sim_T.text()),
@@ -294,10 +333,397 @@ class FrfInputPage(QWidget):
         }
 
 
+class _ChainList(QWidget):
+    """
+    Ordered, checkable list for filter chains.
+
+    Each item is checkable; ordering is controlled via Up/Down buttons.
+    """
+
+    changed = Signal()
+
+    def __init__(self, title: str, entries: List[Tuple[str, str]]) -> None:
+        super().__init__()
+        self._list = QListWidget()
+        self._list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self._list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        for key, label in entries:
+            it = QListWidgetItem(label)
+            it.setData(Qt.ItemDataRole.UserRole, key)
+            it.setFlags(
+                it.flags()
+                | Qt.ItemFlag.ItemIsUserCheckable
+                | Qt.ItemFlag.ItemIsSelectable
+                | Qt.ItemFlag.ItemIsEnabled
+            )
+            it.setCheckState(Qt.CheckState.Unchecked)
+            self._list.addItem(it)
+
+        # Emit change on toggle
+        self._list.itemChanged.connect(lambda _it: self._emit_changed())
+
+        self._btn_up = QPushButton("Up")
+        self._btn_down = QPushButton("Down")
+        self._btn_up.clicked.connect(lambda: self._move(-1))
+        self._btn_down.clicked.connect(lambda: self._move(+1))
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(QLabel(title))
+        layout.addWidget(self._list, 1)
+        layout.addWidget(self._btn_up)
+        layout.addWidget(self._btn_down)
+
+        if self._list.count() > 0:
+            self._list.setCurrentRow(0)
+
+    def _move(self, delta: int) -> None:
+        row = self._list.currentRow()
+        if row < 0:
+            return
+        new_row = row + int(delta)
+        if new_row < 0 or new_row >= self._list.count():
+            return
+        it = self._list.takeItem(row)
+        self._list.insertItem(new_row, it)
+        self._list.setCurrentRow(new_row)
+        self._emit_changed()
+
+    def _emit_changed(self) -> None:
+        # Delay-free: keep it simple, updates are cheap.
+        try:
+            self.changed.emit()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    def set_show_all_items(self) -> None:
+        """
+        Size the list so all items are visible (no internal scrolling).
+        """
+        if self._list.count() <= 0:
+            return
+        row_h = self._list.sizeHintForRow(0)
+        if row_h <= 0:
+            row_h = 22
+        total = row_h * self._list.count() + (2 * self._list.frameWidth()) + 6
+        self._list.setMinimumHeight(total)
+        self._list.setMaximumHeight(total)
+
+    def get_chain(self) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for i in range(self._list.count()):
+            it = self._list.item(i)
+            key = it.data(Qt.ItemDataRole.UserRole)
+            enabled = it.checkState() == Qt.CheckState.Checked
+            if isinstance(key, str) and key:
+                out.append({"name": key, "enabled": bool(enabled)})
+        return out
+
+    def set_chain(self, chain: List[Dict[str, Any]]) -> None:
+        chain = list(chain or [])
+        desired = [c.get("name") for c in chain if isinstance(c, dict)]
+
+        items: List[QListWidgetItem] = []
+        while self._list.count():
+            items.append(self._list.takeItem(0))
+
+        by_key: Dict[str, QListWidgetItem] = {}
+        for it in items:
+            k = it.data(Qt.ItemDataRole.UserRole)
+            if isinstance(k, str):
+                by_key[k] = it
+
+        for k in desired:
+            if isinstance(k, str) and k in by_key:
+                self._list.addItem(by_key.pop(k))
+        for it in by_key.values():
+            self._list.addItem(it)
+
+        enabled_by_key = {c.get("name"): bool(c.get("enabled", False)) for c in chain if isinstance(c, dict)}
+        for i in range(self._list.count()):
+            it = self._list.item(i)
+            k = it.data(Qt.ItemDataRole.UserRole)
+            if isinstance(k, str) and k in enabled_by_key:
+                it.setCheckState(
+                    Qt.CheckState.Checked if enabled_by_key[k] else Qt.CheckState.Unchecked
+                )
+        self.set_show_all_items()
+        self._emit_changed()
+
+
+class FrfFilteringPage(QWidget):
+    default_save_requested = Signal(dict)
+    filtering_changed = Signal(dict)
+
+    def __init__(self) -> None:
+        super().__init__()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        title = QLabel("Filtering")
+        title.setStyleSheet("font-weight: 600;")
+        layout.addWidget(title)
+
+        entries = [("wiener", "Wiener"), ("savgol", "Savitzky–Golay")]
+        chain_split = QSplitter(Qt.Orientation.Horizontal)
+        self._u_chain = _ChainList("Force (u) filter chain", entries)
+        self._resp_chain = _ChainList("Response filter chain", entries)
+        chain_split.addWidget(self._u_chain)
+        chain_split.addWidget(self._resp_chain)
+        chain_split.setStretchFactor(0, 1)
+        chain_split.setStretchFactor(1, 1)
+        layout.addWidget(chain_split)
+
+        self._pipeline_preview = QLabel("")
+        layout.addWidget(self._pipeline_preview)
+
+        # Filter parameters
+        filt_params = QWidget()
+        filt_form = QFormLayout(filt_params)
+        filt_form.setContentsMargins(0, 0, 0, 0)
+
+        self._wiener_mysize = QLineEdit("1000")
+        filt_form.addRow("Wiener mysize (samples)", self._wiener_mysize)
+
+        self._savgol_wl = QLineEdit("10")
+        self._savgol_po = QLineEdit("2")
+        filt_form.addRow("SavGol window_length", self._savgol_wl)
+        filt_form.addRow("SavGol polyorder", self._savgol_po)
+
+        layout.addWidget(filt_params)
+
+        # Windowing (final step)
+        layout.addWidget(QLabel("Windowing (final step)"))
+        win_params = QWidget()
+        win_form = QFormLayout(win_params)
+        win_form.setContentsMargins(0, 0, 0, 0)
+
+        self._win_in_type = QComboBox()
+        self._win_out_type = QComboBox()
+        for nm in ["hann", "exponential", "raised-cosine", "signal-based", "constant"]:
+            self._win_in_type.addItem(nm, userData=nm)
+            self._win_out_type.addItem(nm, userData=nm)
+        self._win_in_type.setCurrentIndex(0)
+        self._win_out_type.setCurrentIndex(1)
+        win_form.addRow(QLabel("Input window type"), self._win_in_type)
+        win_form.addRow(QLabel("Output window type"), self._win_out_type)
+
+        self._win_hann_width = QLineEdit("0.05")
+        self._win_pre = QLineEdit("0.05")
+        self._win_post = QLineEdit("0.1")
+        self._win_beta = QLineEdit("0.25")
+        self._win_rolloff = QLineEdit("0.005")
+        self._win_trigger_pct = QLineEdit("0.1")
+        self._win_low_pct = QLineEdit("0.001")
+        self._win_sliding = QLineEdit("200")
+        self._win_std_mult = QLineEdit("3.0")
+        self._win_decay_db = QLineEdit("40.0")
+
+        self._win_rows: Dict[str, Tuple[QLabel, QWidget]] = {}
+
+        def _add_row(key: str, label: str, w: QWidget) -> None:
+            lab = QLabel(label)
+            win_form.addRow(lab, w)
+            self._win_rows[key] = (lab, w)
+
+        _add_row("window_hann_width", "window_hann_width (s)", self._win_hann_width)
+        _add_row("window_pre_seconds", "window_pre_seconds (s)", self._win_pre)
+        _add_row("window_post_seconds", "window_post_seconds (s)", self._win_post)
+        _add_row("window_beta", "window_beta", self._win_beta)
+        _add_row("window_rolloff_seconds", "window_rolloff_seconds (s)", self._win_rolloff)
+        _add_row("window_trigger_percent", "window_trigger_percent", self._win_trigger_pct)
+        _add_row("window_low_percent", "window_low_percent", self._win_low_pct)
+        _add_row("window_sliding_size", "window_sliding_size (samples)", self._win_sliding)
+        _add_row("window_std_multiplier", "window_std_multiplier", self._win_std_mult)
+        _add_row("window_decay_db", "window_decay_db", self._win_decay_db)
+
+        layout.addWidget(win_params)
+
+        self._btn_save_default = QPushButton("Save as default")
+        self._btn_save_default.clicked.connect(self._on_save_default)
+        layout.addWidget(self._btn_save_default)
+        layout.addStretch(1)
+
+        # Default order: wiener then savgol (enabled)
+        self._u_chain.set_chain([{"name": "wiener", "enabled": True}, {"name": "savgol", "enabled": True}])
+        self._resp_chain.set_chain([{"name": "wiener", "enabled": True}, {"name": "savgol", "enabled": True}])
+        self._u_chain.set_show_all_items()
+        self._resp_chain.set_show_all_items()
+        self._refresh_preview()
+
+        for w in [
+            self._wiener_mysize,
+            self._savgol_wl,
+            self._savgol_po,
+            self._win_hann_width,
+            self._win_pre,
+            self._win_post,
+            self._win_beta,
+            self._win_rolloff,
+            self._win_trigger_pct,
+            self._win_low_pct,
+            self._win_sliding,
+            self._win_std_mult,
+            self._win_decay_db,
+        ]:
+            w.editingFinished.connect(self._refresh_preview)
+        # Live pipeline updates
+        self._u_chain.changed.connect(self._refresh_preview)  # type: ignore[attr-defined]
+        self._resp_chain.changed.connect(self._refresh_preview)  # type: ignore[attr-defined]
+        self._win_in_type.currentIndexChanged.connect(self._on_window_type_changed)
+        self._win_out_type.currentIndexChanged.connect(self._on_window_type_changed)
+
+        self._update_window_param_visibility()
+
+    def _on_window_type_changed(self) -> None:
+        self._update_window_param_visibility()
+        self._refresh_preview()
+
+    def _update_window_param_visibility(self) -> None:
+        in_type = str(self._win_in_type.currentData() or "hann")
+        out_type = str(self._win_out_type.currentData() or "exponential")
+        active = {in_type, out_type}
+
+        show: set[str] = set()
+        if "hann" in active:
+            show |= {"window_hann_width"}
+        if "exponential" in active:
+            show |= {"window_decay_db"}
+        if "raised-cosine" in active:
+            show |= {"window_pre_seconds", "window_post_seconds", "window_beta"}
+        if "signal-based" in active:
+            show |= {
+                "window_rolloff_seconds",
+                "window_trigger_percent",
+                "window_low_percent",
+                "window_sliding_size",
+                "window_std_multiplier",
+            }
+        # constant: no params
+
+        for key, (lab, w) in (self._win_rows or {}).items():
+            vis = key in show
+            lab.setVisible(vis)
+            w.setVisible(vis)
+
+    def _refresh_preview(self) -> None:
+        def fmt(chain: List[Dict[str, Any]]) -> str:
+            parts: List[str] = []
+            for c in chain:
+                if not isinstance(c, dict):
+                    continue
+                if not c.get("enabled", False):
+                    continue
+                nm = c.get("name")
+                if isinstance(nm, str) and nm:
+                    parts.append(nm)
+            return " → ".join(parts) if parts else "(no filters)"
+
+        self._pipeline_preview.setText(
+            f"Pipeline: raw → bias → u:[{fmt(self._u_chain.get_chain())}] → resp:[{fmt(self._resp_chain.get_chain())}] → windowing"
+        )
+        self._emit_filtering_changed()
+
+    def _emit_filtering_changed(self) -> None:
+        try:
+            self.filtering_changed.emit(self.build_filtering_cfg())
+        except Exception:
+            pass
+
+    def _on_save_default(self) -> None:
+        self.default_save_requested.emit(self.build_filtering_cfg())
+
+    def build_filtering_cfg(self) -> Dict[str, Any]:
+        self._refresh_preview()
+
+        def i(txt: str) -> int:
+            return int(float((txt or "").strip() or "0") or 0)
+
+        def f(txt: str) -> float:
+            return float((txt or "").strip() or "0")
+
+        return {
+            "u_chain": self._u_chain.get_chain(),
+            "resp_chain": self._resp_chain.get_chain(),
+            "params": {
+                "wiener": {"mysize": i(self._wiener_mysize.text())},
+                "savgol": {"window_length": i(self._savgol_wl.text()), "polyorder": i(self._savgol_po.text())},
+            },
+            "windowing": {
+                "input_window_type": str(self._win_in_type.currentData() or "hann"),
+                "output_window_type": str(self._win_out_type.currentData() or "exponential"),
+                "window_hann_width": f(self._win_hann_width.text()),
+                "window_pre_seconds": f(self._win_pre.text()),
+                "window_post_seconds": f(self._win_post.text()),
+                "window_beta": f(self._win_beta.text()),
+                "window_rolloff_seconds": f(self._win_rolloff.text()),
+                "window_trigger_percent": f(self._win_trigger_pct.text()),
+                "window_low_percent": f(self._win_low_pct.text()),
+                "window_sliding_size": i(self._win_sliding.text()),
+                "window_std_multiplier": f(self._win_std_mult.text()),
+                "window_decay_db": f(self._win_decay_db.text()),
+            },
+        }
+
+    def apply_filtering_cfg(self, cfg: Dict[str, Any]) -> None:
+        cfg = dict(cfg or {})
+        if isinstance(cfg.get("u_chain"), list):
+            self._u_chain.set_chain(cfg.get("u_chain") or [])
+        if isinstance(cfg.get("resp_chain"), list):
+            self._resp_chain.set_chain(cfg.get("resp_chain") or [])
+
+        params = cfg.get("params") or {}
+        if isinstance(params, dict):
+            w = params.get("wiener") or {}
+            if isinstance(w, dict) and "mysize" in w:
+                self._wiener_mysize.setText(str(w.get("mysize") or ""))
+            s = params.get("savgol") or {}
+            if isinstance(s, dict):
+                if "window_length" in s:
+                    self._savgol_wl.setText(str(s.get("window_length") or ""))
+                if "polyorder" in s:
+                    self._savgol_po.setText(str(s.get("polyorder") or ""))
+
+        win = cfg.get("windowing") or {}
+        if isinstance(win, dict):
+            def _set_combo(cb: QComboBox, value: str) -> None:
+                for idx in range(cb.count()):
+                    if cb.itemData(idx) == value:
+                        cb.setCurrentIndex(idx)
+                        return
+
+            _set_combo(self._win_in_type, str(win.get("input_window_type") or "hann"))
+            _set_combo(self._win_out_type, str(win.get("output_window_type") or "exponential"))
+
+            mapping = {
+                "window_hann_width": self._win_hann_width,
+                "window_pre_seconds": self._win_pre,
+                "window_post_seconds": self._win_post,
+                "window_beta": self._win_beta,
+                "window_rolloff_seconds": self._win_rolloff,
+                "window_trigger_percent": self._win_trigger_pct,
+                "window_low_percent": self._win_low_pct,
+                "window_sliding_size": self._win_sliding,
+                "window_std_multiplier": self._win_std_mult,
+                "window_decay_db": self._win_decay_db,
+            }
+            for k, le in mapping.items():
+                if k in win:
+                    le.setText(str(win.get(k)))
+
+        self._update_window_param_visibility()
+        self._refresh_preview()
+        self._emit_filtering_changed()
+
+
 class FrfResultsPage(QWidget):
     def __init__(self, model: FrfInputModel) -> None:
         super().__init__()
         self._model = model
+        self._filtering_cfg: Dict[str, Any] = {}
         self._last_x: Optional[_DirectionalFrfResult] = None
         self._last_y: Optional[_DirectionalFrfResult] = None
         self._last_proc_x: Optional[_DirectionalProcessing] = None
@@ -357,6 +783,9 @@ class FrfResultsPage(QWidget):
         self._tabs.addTab(self._tab_bode_disp, "Bode (displacement/force)")
         self._tabs.addTab(self._tab_bode_accel, "Bode (acceleration/force)")
         layout.addWidget(self._tabs, 1)
+
+    def set_filtering_cfg(self, cfg: Dict[str, Any]) -> None:
+        self._filtering_cfg = dict(cfg or {})
 
     def _build_experiment_cfg(self) -> Dict[str, Any]:
         # Start from defaults and override from model.
@@ -623,135 +1052,26 @@ class FrfResultsPage(QWidget):
         y_accel = np.asarray(data[y_name], dtype=float)  # treated as acceleration
 
         params = frf_estimation.get_system_parameters()
-        f, H_accel = frf_estimation.compute_frf_from_signals(time, u, y_accel, params)
+        # Apply FRF GUI filtering/windowing settings if present in analysis config.
+        # The experiment config is loaded via `_build_experiment_cfg()` and passed to load_data,
+        # but the FRF computation itself is driven by `params` here.
+        filtering = dict(self._filtering_cfg or {})
+
+        u_proc, y_proc, params = apply_frf_filtering_and_windowing(
+            time=time,
+            u=u,
+            resp=y_accel,
+            params=params,
+            filtering_cfg=filtering,
+        )
+
+        f, H_accel = frf_estimation.compute_frf_from_signals(time, u_proc, y_proc, params)
         H_disp = accel_to_disp_over_force(f, H_accel)
 
-        proc = self._compute_processing_steps(time=time, u=u, resp=y_accel, direction=direction, params=params)
-        return ((f, H_disp), (f, H_accel)), proc
-
-    @staticmethod
-    def _compute_processing_steps(
-        *,
-        time: np.ndarray,
-        u: np.ndarray,
-        resp: np.ndarray,
-        direction: str,
-        params: Dict[str, Any],
-    ) -> _DirectionalProcessing:
-        time = np.asarray(time, dtype=float)
-        u = np.asarray(u, dtype=float)
-        resp = np.asarray(resp, dtype=float)
-
-        if len(time) < 2:
-            raise ValueError("Not enough samples to compute processing steps")
-        dt = float(time[1] - time[0])
-        fs = 1.0 / dt
-
-        bias_n = int(params.get("bias_window_size", 0) or 0)
-        u_bias, u_bias_idx, u_bias_actual = signal_processing.remove_bias_window(u, bias_n)
-        r_bias, r_bias_idx, r_bias_actual = signal_processing.remove_bias_window(resp, bias_n)
-
-        u_steps: List[_SignalStep] = [_SignalStep("raw", u), _SignalStep("bias_corrected", u_bias)]
-        r_steps: List[_SignalStep] = [_SignalStep("raw", resp), _SignalStep("bias_corrected", r_bias)]
-
-        # Windowing (use the canonical implementation from frf_estimation to support all configured types)
-        win_u_type = params.get("input_window_type", "hann")
-        win_r_type = params.get("output_window_type", "hann")
-        window_u, _meta_u = frf_estimation.create_window(u_bias, time, params, dt, window_type=win_u_type)
-        window_r, _meta_r = frf_estimation.create_window(r_bias, time, params, dt, window_type=win_r_type)
-
-        u_steps.append(_SignalStep("window", window_u))
-        r_steps.append(_SignalStep("window", window_r))
-        u_win = u_bias * window_u
-        r_win = r_bias * window_r
-        u_steps.append(_SignalStep("windowed", u_win))
-        r_steps.append(_SignalStep("windowed", r_win))
-
-        # Filtering steps (for visualization; follow toggles from params)
-        # Wiener
-        if bool(params.get("wiener_filter", False)):
-            noise_u = signal_processing.calculate_noise_power_from_window(u, u_bias_idx, u_bias_actual)
-            noise_r = signal_processing.calculate_noise_power_from_window(resp, r_bias_idx, r_bias_actual)
-            u_wien = signal_processing.apply_wiener_filter_legacy(u_bias, noise_u, u_bias_actual)
-            r_wien = signal_processing.apply_wiener_filter_legacy(r_bias, noise_r, r_bias_actual)
-            u_steps.append(_SignalStep("wiener", u_wien))
-            r_steps.append(_SignalStep("wiener", r_wien))
-
-        # SavGol
-        if bool(params.get("savgol_filter", False)):
-            wl = int(params.get("savgol_window_length", 0) or 0)
-            po = int(params.get("savgol_polyorder", 0) or 0)
-            u_sg = signal_processing.apply_savgol_filter(u_bias, wl, po)
-            r_sg = signal_processing.apply_savgol_filter(r_bias, wl, po)
-            u_steps.append(_SignalStep("savgol", u_sg))
-            r_steps.append(_SignalStep("savgol", r_sg))
-
-        # Lowpass (Bessel legacy behaviour exists in signal_processing)
-        if bool(params.get("lowpass_filter", False)):
-            bw = float(params.get("lowpass_bandwidth_hz", 0.0) or 0.0)
-            u_lp = signal_processing.apply_lowpass_filter_bessel(u_bias, bw, fs)
-            r_lp = signal_processing.apply_lowpass_filter_bessel(r_bias, bw, fs)
-            u_steps.append(_SignalStep(f"lowpass_{bw:g}Hz", u_lp))
-            r_steps.append(_SignalStep(f"lowpass_{bw:g}Hz", r_lp))
-
-        # Welch grid diagnostics (force PSD + coherence between u and response)
-        nperseg = int(params.get("welch_nperseg", 2048) or 2048)
-        nperseg = max(2, min(nperseg, len(u_bias), len(r_bias)))
-        noverlap = int(params.get("welch_noverlap", nperseg // 2) or (nperseg // 2))
-        noverlap = max(0, min(noverlap, nperseg - 1))
-        welch_window = params.get("welch_window", "hamming")
-
-        f_welch, Puu = signal.welch(u_bias, fs=fs, nperseg=nperseg, noverlap=noverlap, window=welch_window)
-        f2, Prr = signal.welch(r_bias, fs=fs, nperseg=nperseg, noverlap=noverlap, window=welch_window)
-        f3, Pur = signal.csd(u_bias, r_bias, fs=fs, nperseg=nperseg, noverlap=noverlap, window=welch_window)
-        if not (np.allclose(f_welch, f2) and np.allclose(f_welch, f3)):
-            # Align to force grid defensively
-            Prr = np.interp(f_welch, f2, Prr)
-            Pur = np.interp(f_welch, f3, np.real(Pur)) + 1j * np.interp(f_welch, f3, np.imag(Pur))
-
-        denom = (Puu * Prr) + 1e-30
-        coh = np.abs(Pur) ** 2 / denom
-        coh = np.clip(coh, 0.0, 1.0)
-
-        # FFT magnitude (separate plot): show for a few key steps
-        fft_n = len(time)
-        fft_f = np.fft.rfftfreq(fft_n, d=dt)
-
-        def _mag(x: np.ndarray) -> np.ndarray:
-            return np.abs(np.fft.rfft(np.asarray(x, dtype=float), n=fft_n))
-
-        # Always include raw, bias_corrected, windowed, and last filtered if present
-        pick_names = ["raw", "bias_corrected", "windowed"]
-        last_u = u_steps[-1].name if u_steps else "raw"
-        last_r = r_steps[-1].name if r_steps else "raw"
-        for nm in [last_u, last_r]:
-            if nm not in pick_names:
-                pick_names.append(nm)
-
-        fft_u_mag: Dict[str, np.ndarray] = {}
-        fft_r_mag: Dict[str, np.ndarray] = {}
-        u_by_name = {s.name: s.y for s in u_steps}
-        r_by_name = {s.name: s.y for s in r_steps}
-        for nm in pick_names:
-            if nm in u_by_name and nm not in fft_u_mag:
-                fft_u_mag[nm] = _mag(u_by_name[nm])
-            if nm in r_by_name and nm not in fft_r_mag:
-                fft_r_mag[nm] = _mag(r_by_name[nm])
-
-        return _DirectionalProcessing(
-            direction=direction,
-            time=time,
-            fs_hz=float(fs),
-            u_steps=u_steps,
-            resp_steps=r_steps,
-            window=None,  # window already included as a step; keep None to avoid duplication
-            f_hz=np.asarray(f_welch, dtype=float),
-            psd_u=np.asarray(Puu, dtype=float),
-            coherence_uy=np.asarray(coh, dtype=float),
-            fft_f_hz=np.asarray(fft_f, dtype=float),
-            fft_u_mag=fft_u_mag,
-            fft_resp_mag=fft_r_mag,
+        proc = self._compute_processing_steps(
+            time=time, u=u, resp=y_accel, direction=direction, params=params, filtering_cfg=filtering
         )
+        return ((f, H_disp), (f, H_accel)), proc
 
     @staticmethod
     def _enable_legend_toggles(fig) -> None:
@@ -780,7 +1100,9 @@ class FrfResultsPage(QWidget):
                 lines_by_label = {ln.get_label(): ln for ln in ax.get_lines()}
                 leg_lines = list(leg.get_lines() or [])
                 leg_texts = list(leg.get_texts() or [])
-                leg_patches = list(getattr(leg, "legend_handles", []) or getattr(leg, "legendHandles", []) or [])
+                leg_patches = list(
+                    getattr(leg, "legend_handles", []) or getattr(leg, "legendHandles", []) or []
+                )
                 for leg_line, leg_text in zip(leg_lines, leg_texts):
                     label = leg_text.get_text()
                     orig_line = lines_by_label.get(label)
@@ -870,7 +1192,13 @@ class FrfResultsPage(QWidget):
         has_y = has_any(y_channels)
         if not has_x and not has_y:
             ax = fig.add_subplot(1, 1, 1)
-            ax.text(0.5, 0.5, "No raw channels available (simulation mode or missing channels).", ha="center", va="center")
+            ax.text(
+                0.5,
+                0.5,
+                "No raw channels available (simulation mode or missing channels).",
+                ha="center",
+                va="center",
+            )
             ax.set_axis_off()
             widget.redraw()
             return
@@ -931,7 +1259,6 @@ class FrfResultsPage(QWidget):
         ax.grid(True, alpha=0.25)
         ax.set_xlabel("Time (s)")
 
-        # Plot helper
         def add_steps(ax, t: np.ndarray, steps: List[_SignalStep], prefix: str) -> None:
             default_visible = {"raw", "bias_corrected", "window", "windowed", "wiener", "savgol"}
             for s in steps:
@@ -958,7 +1285,6 @@ class FrfResultsPage(QWidget):
             add_steps(ax, y_proc.time, y_proc.resp_steps, prefix="y:")
             ax.set_ylabel("Response (m/s²)")
         else:
-            # Fallback if mode doesn't match available data
             if x_proc is not None:
                 add_steps(ax, x_proc.time, x_proc.u_steps, prefix="Fx:")
                 ax.set_ylabel("Force (N)")
@@ -1137,6 +1463,231 @@ class FrfResultsPage(QWidget):
         ax_ph.legend()
 
         widget.redraw()
+
+    @staticmethod
+    def _compute_processing_steps(
+        *,
+        time: np.ndarray,
+        u: np.ndarray,
+        resp: np.ndarray,
+        direction: str,
+        params: Dict[str, Any],
+        filtering_cfg: Dict[str, Any] | None = None,
+    ) -> _DirectionalProcessing:
+        time = np.asarray(time, dtype=float)
+        u = np.asarray(u, dtype=float)
+        resp = np.asarray(resp, dtype=float)
+
+        if len(time) < 2:
+            raise ValueError("Not enough samples to compute processing steps")
+        dt = float(time[1] - time[0])
+        fs = 1.0 / dt
+
+        bias_n = int(params.get("bias_window_size", 0) or 0)
+        u_bias, u_bias_idx, u_bias_actual = signal_processing.remove_bias_window(u, bias_n)
+        r_bias, r_bias_idx, r_bias_actual = signal_processing.remove_bias_window(resp, bias_n)
+
+        u_steps: List[_SignalStep] = [_SignalStep("raw", u), _SignalStep("bias_corrected", u_bias)]
+        r_steps: List[_SignalStep] = [_SignalStep("raw", resp), _SignalStep("bias_corrected", r_bias)]
+
+        # Apply filter chains (pre-windowing) as configured.
+        filtering_cfg = dict(filtering_cfg or {})
+        u_chain = filtering_cfg.get("u_chain") if isinstance(filtering_cfg.get("u_chain"), list) else []
+        r_chain = filtering_cfg.get("resp_chain") if isinstance(filtering_cfg.get("resp_chain"), list) else []
+        filt_params = filtering_cfg.get("params") if isinstance(filtering_cfg.get("params"), dict) else {}
+
+        def _apply_chain(x_in: np.ndarray, chain: list, is_u: bool) -> Tuple[np.ndarray, List[_SignalStep]]:
+            x_cur = np.asarray(x_in, dtype=float)
+            steps: List[_SignalStep] = []
+            for entry in chain:
+                if not isinstance(entry, dict):
+                    continue
+                nm = entry.get("name")
+                if not entry.get("enabled", False):
+                    continue
+                if nm == "wiener":
+                    mysize = int(
+                        ((filt_params.get("wiener") or {}).get("mysize") or (u_bias_actual if is_u else r_bias_actual))
+                        or 1
+                    )
+                    mysize = max(1, mysize)
+                    noise_src = u if is_u else resp
+                    noise_idx = u_bias_idx if is_u else r_bias_idx
+                    noise_actual = u_bias_actual if is_u else r_bias_actual
+                    noise_pow = signal_processing.calculate_noise_power_from_window(noise_src, noise_idx, noise_actual)
+                    x_cur = signal_processing.apply_wiener_filter_legacy(x_cur, noise_pow, mysize)
+                    steps.append(_SignalStep("wiener", x_cur))
+                elif nm == "savgol":
+                    p = filt_params.get("savgol") or {}
+                    wl = int((p.get("window_length") or 0) or 0)
+                    po = int((p.get("polyorder") or 0) or 0)
+                    x_cur = signal_processing.apply_savgol_filter(x_cur, wl, po)
+                    steps.append(_SignalStep("savgol", x_cur))
+            return x_cur, steps
+
+        u_filtered, u_f_steps = _apply_chain(u_bias, u_chain, is_u=True)
+        r_filtered, r_f_steps = _apply_chain(r_bias, r_chain, is_u=False)
+        u_steps.extend(u_f_steps)
+        r_steps.extend(r_f_steps)
+
+        # Windowing is last
+        win_over = filtering_cfg.get("windowing") if isinstance(filtering_cfg.get("windowing"), dict) else {}
+        if isinstance(win_over, dict):
+            params = dict(params)
+            params.update(dict(win_over))
+
+        win_u_type = params.get("input_window_type", "hann")
+        win_r_type = params.get("output_window_type", "hann")
+        window_u, _meta_u = frf_estimation.create_window(u_filtered, time, params, dt, window_type=win_u_type)
+        window_r, _meta_r = frf_estimation.create_window(r_filtered, time, params, dt, window_type=win_r_type)
+
+        def _scale_for_display(x: np.ndarray) -> float:
+            try:
+                s = float(np.max(np.abs(np.asarray(x, dtype=float))))
+            except Exception:
+                s = 1.0
+            if not np.isfinite(s) or s <= 0:
+                return 1.0
+            return s
+
+        # Display window at comparable amplitude to the last pre-window (post-filter) signal.
+        u_steps.append(_SignalStep("window", window_u * _scale_for_display(u_filtered)))
+        r_steps.append(_SignalStep("window", window_r * _scale_for_display(r_filtered)))
+        u_win = u_filtered * window_u
+        r_win = r_filtered * window_r
+        u_steps.append(_SignalStep("windowed", u_win))
+        r_steps.append(_SignalStep("windowed", r_win))
+
+        # Welch grid diagnostics (force PSD + coherence between u and response)
+        nperseg = int(params.get("welch_nperseg", 2048) or 2048)
+        nperseg = max(2, min(nperseg, len(u_bias), len(r_bias)))
+        noverlap = int(params.get("welch_noverlap", nperseg // 2) or (nperseg // 2))
+        noverlap = max(0, min(noverlap, nperseg - 1))
+        welch_window = params.get("welch_window", "hamming")
+
+        f_welch, Puu = signal.welch(u_filtered, fs=fs, nperseg=nperseg, noverlap=noverlap, window=welch_window)
+        f2, Prr = signal.welch(r_filtered, fs=fs, nperseg=nperseg, noverlap=noverlap, window=welch_window)
+        f3, Pur = signal.csd(u_filtered, r_filtered, fs=fs, nperseg=nperseg, noverlap=noverlap, window=welch_window)
+        if not (np.allclose(f_welch, f2) and np.allclose(f_welch, f3)):
+            # Align to force grid defensively
+            Prr = np.interp(f_welch, f2, Prr)
+            Pur = np.interp(f_welch, f3, np.real(Pur)) + 1j * np.interp(f_welch, f3, np.imag(Pur))
+
+        denom = (Puu * Prr) + 1e-30
+        coh = np.abs(Pur) ** 2 / denom
+        coh = np.clip(coh, 0.0, 1.0)
+
+        # FFT magnitude (separate plot): show for a few key steps
+        fft_n = len(time)
+        fft_f = np.fft.rfftfreq(fft_n, d=dt)
+
+        def _mag(x: np.ndarray) -> np.ndarray:
+            return np.abs(np.fft.rfft(np.asarray(x, dtype=float), n=fft_n))
+
+        # Always include raw, bias_corrected, windowed, and last filtered if present
+        pick_names = ["raw", "bias_corrected", "windowed"]
+        last_u = u_steps[-1].name if u_steps else "raw"
+        last_r = r_steps[-1].name if r_steps else "raw"
+        for nm in [last_u, last_r]:
+            if nm not in pick_names:
+                pick_names.append(nm)
+
+        fft_u_mag: Dict[str, np.ndarray] = {}
+        fft_r_mag: Dict[str, np.ndarray] = {}
+        u_by_name = {s.name: s.y for s in u_steps}
+        r_by_name = {s.name: s.y for s in r_steps}
+        for nm in pick_names:
+            if nm in u_by_name and nm not in fft_u_mag:
+                fft_u_mag[nm] = _mag(u_by_name[nm])
+            if nm in r_by_name and nm not in fft_r_mag:
+                fft_r_mag[nm] = _mag(r_by_name[nm])
+
+        return _DirectionalProcessing(
+            direction=direction,
+            time=time,
+            fs_hz=float(fs),
+            u_steps=u_steps,
+            resp_steps=r_steps,
+            window=None,  # window already included as a step; keep None to avoid duplication
+            f_hz=np.asarray(f_welch, dtype=float),
+            psd_u=np.asarray(Puu, dtype=float),
+            coherence_uy=np.asarray(coh, dtype=float),
+            fft_f_hz=np.asarray(fft_f, dtype=float),
+            fft_u_mag=fft_u_mag,
+            fft_resp_mag=fft_r_mag,
+        )
+
+
+def apply_frf_filtering_and_windowing(
+    *,
+    time: np.ndarray,
+    u: np.ndarray,
+    resp: np.ndarray,
+    params: Dict[str, Any],
+    filtering_cfg: Dict[str, Any],
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+    """
+    Apply: bias -> (filter chains) -> windowing(last) to both u and resp.
+
+    Returns (u_processed, resp_processed, updated_params) where updated_params includes any
+    windowing overrides from filtering_cfg.
+    """
+    time = np.asarray(time, dtype=float)
+    u = np.asarray(u, dtype=float)
+    resp = np.asarray(resp, dtype=float)
+    params = dict(params or {})
+    filtering_cfg = dict(filtering_cfg or {})
+
+    if len(time) < 2:
+        return u, resp, params
+
+    dt = float(time[1] - time[0])
+
+    # Bias removal
+    bias_n = int(params.get("bias_window_size", 0) or 0)
+    u_bias, u_bias_idx, u_bias_actual = signal_processing.remove_bias_window(u, bias_n)
+    r_bias, r_bias_idx, r_bias_actual = signal_processing.remove_bias_window(resp, bias_n)
+
+    u_chain = filtering_cfg.get("u_chain") if isinstance(filtering_cfg.get("u_chain"), list) else []
+    r_chain = filtering_cfg.get("resp_chain") if isinstance(filtering_cfg.get("resp_chain"), list) else []
+    filt_params = filtering_cfg.get("params") if isinstance(filtering_cfg.get("params"), dict) else {}
+
+    def _apply_chain(x_in: np.ndarray, chain: list, is_u: bool) -> np.ndarray:
+        x_cur = np.asarray(x_in, dtype=float)
+        for entry in chain:
+            if not isinstance(entry, dict):
+                continue
+            nm = entry.get("name")
+            if not entry.get("enabled", False):
+                continue
+            if nm == "wiener":
+                mysize = int(((filt_params.get("wiener") or {}).get("mysize") or (u_bias_actual if is_u else r_bias_actual)) or 1)
+                mysize = max(1, mysize)
+                noise_src = u if is_u else resp
+                noise_idx = u_bias_idx if is_u else r_bias_idx
+                noise_actual = u_bias_actual if is_u else r_bias_actual
+                noise_pow = signal_processing.calculate_noise_power_from_window(noise_src, noise_idx, noise_actual)
+                x_cur = signal_processing.apply_wiener_filter_legacy(x_cur, noise_pow, mysize)
+            elif nm == "savgol":
+                p = filt_params.get("savgol") or {}
+                wl = int((p.get("window_length") or 0) or 0)
+                po = int((p.get("polyorder") or 0) or 0)
+                x_cur = signal_processing.apply_savgol_filter(x_cur, wl, po)
+        return x_cur
+
+    u_filt = _apply_chain(u_bias, u_chain, is_u=True)
+    r_filt = _apply_chain(r_bias, r_chain, is_u=False)
+
+    # Windowing overrides from filtering cfg
+    win_over = filtering_cfg.get("windowing") if isinstance(filtering_cfg.get("windowing"), dict) else {}
+    if isinstance(win_over, dict):
+        params.update(dict(win_over))
+
+    win_u_type = params.get("input_window_type", "hann")
+    win_r_type = params.get("output_window_type", "hann")
+    window_u, _ = frf_estimation.create_window(u_filt, time, params, dt, window_type=win_u_type)
+    window_r, _ = frf_estimation.create_window(r_filt, time, params, dt, window_type=win_r_type)
+    return u_filt * window_u, r_filt * window_r, params
 
 
 def json_load(path: Path) -> Dict[str, Any]:

@@ -123,3 +123,51 @@ fig.canvas.mpl_connect("pick_event", on_pick)
 - If you clear/redraw the figure, rebuild the pick-map (the old artists are gone).
 - Keep labels unique enough (prefix with `X:` / `Y:`) so the legend remains readable.
 **Last used:** 2026-04-22 (FRF GUI intermediate plots)
+
+---
+
+## Persist last-selected GUI file paths
+**When to use:** You want the GUI to remember user-selected input file paths across restarts (without tying them to a specific saved analysis folder).
+**Pattern:**
+```python
+# 1) Add fields to AppSettings (src/gui/persistence.py) and persist in config/app_settings.json
+# 2) Make the page emit a signal only when the value changes
+# 3) In MainWindow, restore under a guard flag so restore doesn't trigger saves
+
+# MainWindow:
+self._restoring_settings = True
+try:
+    self._frf_root.set_file_paths(app_settings.last_frf_x_file, app_settings.last_frf_y_file)
+    self._stab_root.set_file_path(app_settings.last_stability_file)
+finally:
+    self._restoring_settings = False
+
+def _on_frf_file_paths_changed(self, x: str, y: str) -> None:
+    if self._restoring_settings:
+        return
+    app_settings.last_frf_x_file = x
+    app_settings.last_frf_y_file = y
+    save_app_settings(repo_root, app_settings)
+```
+**Gotchas:**
+- Guard restores to avoid writing settings while populating UI on startup.
+- Emit only on changes to avoid frequent writes (e.g. on `editingFinished`).
+**Last used:** 2026-04-23
+
+---
+
+## Scale window overlay in time-signal plots
+**When to use:** You plot a window function alongside time-domain processing steps and want it visible at the same amplitude scale as the signal being windowed.
+**Pattern:**
+```python
+# In the processing-step builder (before applying the window):
+scale = float(np.max(np.abs(pre_window_signal))) if len(pre_window_signal) else 1.0
+if not np.isfinite(scale) or scale <= 0:
+    scale = 1.0
+steps.append(_SignalStep("window", window * scale))  # display only
+windowed = pre_window_signal * window               # computation unchanged
+```
+**Gotchas:**
+- Use `max(abs(.))` so the overlay is visible even for negative-dominant signals.
+- Keep the actual windowing math (`signal * window`) unchanged; only scale the displayed `window` trace.
+**Last used:** 2026-04-23

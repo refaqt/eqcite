@@ -20,6 +20,11 @@ class AppSettings:
     default_channel_mapping: Dict[str, int] = field(default_factory=dict)
     default_sensitivity_mapping: Dict[str, str] = field(default_factory=dict)
     default_sensitivities: Dict[str, float] = field(default_factory=dict)
+    last_frf_x_file: str = ""
+    last_frf_y_file: str = ""
+    last_stability_file: str = ""
+    # Default FRF filtering/windowing settings for the GUI (page-level defaults).
+    default_frf_filtering: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -28,6 +33,10 @@ class AppSettings:
             "default_channel_mapping": dict(self.default_channel_mapping or {}),
             "default_sensitivity_mapping": dict(self.default_sensitivity_mapping or {}),
             "default_sensitivities": dict(self.default_sensitivities or {}),
+            "last_frf_x_file": str(self.last_frf_x_file or ""),
+            "last_frf_y_file": str(self.last_frf_y_file or ""),
+            "last_stability_file": str(self.last_stability_file or ""),
+            "default_frf_filtering": dict(self.default_frf_filtering or {}),
         }
 
     @staticmethod
@@ -37,6 +46,10 @@ class AppSettings:
         raw_chan = d.get("default_channel_mapping") or {}
         raw_sens_map = d.get("default_sensitivity_mapping") or {}
         raw_sens = d.get("default_sensitivities") or {}
+        last_frf_x_file = d.get("last_frf_x_file") or ""
+        last_frf_y_file = d.get("last_frf_y_file") or ""
+        last_stability_file = d.get("last_stability_file") or ""
+        default_frf_filtering = d.get("default_frf_filtering") or {}
 
         chan: Dict[str, int] = {}
         if isinstance(raw_chan, dict):
@@ -67,6 +80,10 @@ class AppSettings:
             default_channel_mapping=chan,
             default_sensitivity_mapping=sens_map,
             default_sensitivities=sens,
+            last_frf_x_file=str(last_frf_x_file or ""),
+            last_frf_y_file=str(last_frf_y_file or ""),
+            last_stability_file=str(last_stability_file or ""),
+            default_frf_filtering=dict(default_frf_filtering or {}) if isinstance(default_frf_filtering, dict) else {},
         )
 
 

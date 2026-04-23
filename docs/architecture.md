@@ -57,7 +57,7 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
   - An analysis is saved as a **folder** containing `analysis.json` plus `results/figures`, `results/tables`, and `results/logs`.
   - When saving from the GUI, FRF runs export their current figures + tables into `results/` so the folder is self-contained.
   - Global sensitivities are stored in `config/sensitivities.json` and are not duplicated per analysis folder.
-  - Per-user GUI defaults (folders, and default FRF sensor configuration) are stored in `config/app_settings.json`.
+  - Per-user GUI defaults (folders, default FRF sensor configuration, and last-selected input file paths) are stored in `config/app_settings.json`.
 
 ## Embedded / firmware
 

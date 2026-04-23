@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
@@ -32,6 +32,8 @@ class StabilityInputModel:
 
 
 class StabilityRootPage(QWidget):
+    file_path_changed = Signal(str)
+
     def __init__(self) -> None:
         super().__init__()
 
@@ -41,6 +43,7 @@ class StabilityRootPage(QWidget):
         self._model = StabilityInputModel()
 
         self._page_input = StabilityInputPage(self._model)
+        self._page_input.file_path_changed.connect(self.file_path_changed)
         self._page_sensor = QLabel(
             "Sensor configuration\n\n"
             "Note: the current stability pipeline is legacy and assumes a fixed wiring/channel order.\n"
@@ -71,6 +74,9 @@ class StabilityRootPage(QWidget):
     def set_default_load_dir(self, path: str) -> None:
         self._page_input.set_default_load_dir(path)
 
+    def set_file_path(self, path: str) -> None:
+        self._page_input.set_file_path(path)
+
     @staticmethod
     def _wrap(widget: QWidget) -> QWidget:
         container = QWidget()
@@ -81,10 +87,13 @@ class StabilityRootPage(QWidget):
 
 
 class StabilityInputPage(QWidget):
+    file_path_changed = Signal(str)
+
     def __init__(self, model: StabilityInputModel) -> None:
         super().__init__()
         self._model = model
         self._default_load_dir = ""
+        self._last_emitted_path: str = ""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -96,6 +105,7 @@ class StabilityInputPage(QWidget):
 
         form = QFormLayout()
         self._path = QLineEdit()
+        self._path.editingFinished.connect(self._sync_model_from_ui)
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._browse)
         form.addRow("CSV file", self._path)
@@ -107,6 +117,17 @@ class StabilityInputPage(QWidget):
     def set_default_load_dir(self, path: str) -> None:
         self._default_load_dir = path or ""
 
+    def set_file_path(self, path: str) -> None:
+        self._path.setText(path or "")
+        self._sync_model_from_ui()
+
+    def _sync_model_from_ui(self) -> None:
+        p = (self._path.text() or "").strip()
+        self._model.file_path = p
+        if p != self._last_emitted_path:
+            self._last_emitted_path = p
+            self.file_path_changed.emit(p)
+
     def _browse(self) -> None:
         p, _ = QFileDialog.getOpenFileName(
             self,
@@ -117,7 +138,7 @@ class StabilityInputPage(QWidget):
         if not p:
             return
         self._path.setText(p)
-        self._model.file_path = p
+        self._sync_model_from_ui()
 
 
 class StabilityResultsPage(QWidget):
