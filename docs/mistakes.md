@@ -16,6 +16,7 @@ Log errors, wrong approaches, and **prevention rules** so agents and humans do n
 ---
 
 ## PowerShell pip command used invalid `&&` — 2026-03-20
+**WARNING (repeated):** This mistake has now happened multiple times. Treat `&&` as invalid in this repository’s PowerShell workflow.
 **What happened:** The `venv` dependency install command failed because `&&` is not a valid statement separator in PowerShell in this environment.
 **Root cause:** I used shell-style `&&` chaining instead of PowerShell-safe command chaining.
 **Fix applied:** Re-ran the installation using PowerShell `;` separators and then verified the venv import smoke test.
@@ -52,4 +53,25 @@ Log errors, wrong approaches, and **prevention rules** so agents and humans do n
 **Root cause:** Assumed bash heredoc syntax would work in the current PowerShell environment.
 **Fix applied:** Re-ran the command using `python -c` with an inline script string.
 **Prevention rule:** On Windows/PowerShell, avoid bash heredocs; use `python -c`, a temporary `.py` file, or PowerShell-native piping.
+**Affected files:** None (command-line only)
+
+## Used `cd /d` (cmd syntax) in PowerShell — 2026-04-22
+**What happened:** The GUI launch failed because `cd /d` is `cmd.exe` syntax and PowerShell treated `/d` as an invalid positional parameter.
+**Root cause:** Mixed `cmd.exe` directory-change flags into a PowerShell command.
+**Fix applied:** Switched to PowerShell-native `Set-Location -Path "..."` (or `cd "..."` without `/d`).
+**Prevention rule:** In PowerShell, avoid `cmd.exe`-specific flags like `cd /d`; use `Set-Location` / `cd` with just the path.
+**Affected files:** None (command-line only)
+
+## Used bash-style heredoc in `git commit` under PowerShell — 2026-04-23
+**What happened:** A `git commit -m "$(cat <<'EOF' ... EOF)"` command failed to parse because the bash heredoc syntax isn’t valid in PowerShell.
+**Root cause:** Reused a bash-oriented commit-message pattern in a PowerShell terminal session.
+**Fix applied:** Re-ran `git commit` using multiple `-m` flags (PowerShell-safe) to provide subject + body.
+**Prevention rule:** In PowerShell terminals, avoid bash heredocs and command substitutions; use PowerShell here-strings or `git commit -m "subject" -m "body"`.
+**Affected files:** None (command-line only)
+
+## Qt widget instantiated without QApplication — 2026-04-23
+**What happened:** A smoke test tried to instantiate `FrfResultsPage` directly in a Python one-liner, and the process crashed because Qt widgets require an active `QApplication`.
+**Root cause:** Assumed importing the module was enough for a lightweight instantiation test; forgot Qt’s requirement for a running application object.
+**Fix applied:** Switched the smoke test to create a minimal `QApplication([])` before creating any `QWidget`.
+**Prevention rule:** For Qt/PySide6 smoke tests, always create `QApplication` before instantiating any `QWidget` (or limit smoke tests to import-only).
 **Affected files:** None (command-line only)

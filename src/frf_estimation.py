@@ -171,6 +171,7 @@ def compute_frf_from_signals(
     noverlap = int(params.get("welch_noverlap", nperseg // 2))
     noverlap = max(0, min(noverlap, nperseg - 1))
     window = params.get("welch_window", "hamming")
+    estimator_type = str(params.get("estimator_type", "Hv") or "Hv")
 
     f, Puy = signal.csd(
         u,
@@ -192,8 +193,44 @@ def compute_frf_from_signals(
     if not np.allclose(f, f2):
         raise RuntimeError("Frequency grids from CSD calculations do not match")
 
-    # Avoid division by exactly 0 (or extremely tiny values due to numerical noise)
-    H = Puy / (Puu + 1e-20)
+    # Branch on estimator type (H1, H2, Hv).
+    # eps avoids division by ~0 in the spectral estimates.
+    eps = 1e-20
+    et = estimator_type.strip()
+    if et not in {"H1", "H2", "Hv"}:
+        et = "Hv"
+
+    if et == "H1":
+        # H1(ω) = G_yu / G_uu
+        H = Puy / (Puu + eps)
+    else:
+        # Need additional spectra for H2 and Hv.
+        f3, Pyy = signal.csd(
+            y,
+            y,
+            fs=fs,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            window=window,
+        )
+        f4, Pyu = signal.csd(
+            y,
+            u,
+            fs=fs,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            window=window,
+        )
+        if not (np.allclose(f, f3) and np.allclose(f, f4)):
+            raise RuntimeError("Frequency grids from CSD calculations do not match")
+
+        if et == "H2":
+            # H2(ω) = G_yy / G_yu
+            H = Pyy / (Pyu + eps)
+        else:
+            # Hv(ω) = (G_yu/|G_yu|) * sqrt(G_yy/G_uu)
+            phase = Puy / (np.abs(Puy) + eps)
+            H = phase * np.sqrt((Pyy + eps) / (Puu + eps))
     return f, H
 
 # =============================================================================

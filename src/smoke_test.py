@@ -24,10 +24,15 @@ def smoke_compute_frf_from_signals() -> None:
     params["welch_nperseg"] = 2048
     params["welch_noverlap"] = 2000  # intentionally too large; should be clamped
 
-    f, H = frf_estimation.compute_frf_from_signals(t, u, y, params)
-    assert f.ndim == 1 and H.ndim == 1
-    assert len(f) == len(H)
-    assert np.isfinite(f).all()
+    for et in ["H1", "H2", "Hv"]:
+        params2 = dict(params)
+        params2["estimator_type"] = et
+        f, H = frf_estimation.compute_frf_from_signals(t, u, y, params2)
+        assert f.ndim == 1 and H.ndim == 1
+        assert len(f) == len(H)
+        assert np.isfinite(f).all()
+        assert np.isfinite(np.real(H)).all()
+        assert np.isfinite(np.imag(H)).all()
 
 
 def smoke_load_simulation_with_config() -> None:
@@ -36,7 +41,7 @@ def smoke_load_simulation_with_config() -> None:
         "simulation": {
             "fs": 8000,
             "T": 0.2,
-            "model": {"mass": 8.0, "stiffness": 1e6},
+            "model": {"mass": 8.0, "stiffness": 1e6, "damping": 0.02},
             "hammer": {"force": 50.0, "bandwidth_hz": 1000.0},
         },
     }
@@ -48,6 +53,12 @@ def smoke_load_simulation_with_config() -> None:
         assert d["time"] is not None
         assert "F_x" in d and "F_y" in d
         assert "x_tool" in d and "y_tool" in d
+
+    # Validate semantic: config damping is damping ratio ζ (dimensionless).
+    from . import simulate_system
+
+    sim = simulate_system.simulate_two_axis_system(exp_cfg["simulation"])
+    assert abs(sim["meta"]["damping_ratio"] - 0.02) < 1e-12
 
 
 def run() -> None:

@@ -16,3 +16,5 @@
 
 ## Mistake prevention
 - [This section is auto-populated from docs/mistakes.md prevention rules over time.]
+- In PowerShell, prefer `;` or separate commands; avoid `&&`.
+- In PowerShell, avoid `cmd.exe`-specific flags like `cd /d`; use `Set-Location` / `cd` with just the path.

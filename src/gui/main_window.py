@@ -52,6 +52,7 @@ class MainWindow(QMainWindow):
 
         self._repo_root = Path(__file__).resolve().parents[2]
         self._app_settings: AppSettings = load_app_settings(self._repo_root)
+        self._restoring_settings = False
         self._state = AnalysisState(
             analysis_type="frf",
             sensitivities_path=self._repo_root / "config" / "sensitivities.json",
@@ -122,7 +123,23 @@ class MainWindow(QMainWindow):
         self._stab_root.set_default_load_dir(str(resolve_default_load_dir(self._repo_root, self._app_settings)))
 
         self._frf_root.default_sensor_config_save_requested.connect(self._on_save_default_sensor_config)
+        self._frf_root.default_filtering_save_requested.connect(self._on_save_default_frf_filtering)
+        self._frf_root.file_paths_changed.connect(self._on_frf_file_paths_changed)
+        self._stab_root.file_path_changed.connect(self._on_stability_file_path_changed)
         self._apply_default_sensor_config_if_present()
+        self._apply_default_frf_filtering_if_present()
+        self._restore_last_file_paths()
+
+    def _restore_last_file_paths(self) -> None:
+        self._restoring_settings = True
+        try:
+            self._frf_root.set_file_paths(
+                self._app_settings.last_frf_x_file or "",
+                self._app_settings.last_frf_y_file or "",
+            )
+            self._stab_root.set_file_path(self._app_settings.last_stability_file or "")
+        finally:
+            self._restoring_settings = False
 
     def _apply_default_sensor_config_if_present(self) -> None:
         if (
@@ -140,6 +157,14 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Failed to apply default sensor config", str(e))
 
+    def _apply_default_frf_filtering_if_present(self) -> None:
+        if not (self._app_settings.default_frf_filtering or {}):
+            return
+        try:
+            self._frf_root.apply_default_filtering(dict(self._app_settings.default_frf_filtering or {}))
+        except Exception as e:
+            QMessageBox.critical(self, "Failed to apply default filtering", str(e))
+
     def _on_save_default_sensor_config(
         self,
         channel_mapping: dict,
@@ -155,6 +180,15 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Failed to save default sensor config", str(e))
             return
         QMessageBox.information(self, "Defaults saved", "Saved default sensor configuration.")
+
+    def _on_save_default_frf_filtering(self, filtering_cfg: dict) -> None:
+        self._app_settings.default_frf_filtering = dict(filtering_cfg or {})
+        try:
+            save_app_settings(self._repo_root, self._app_settings)
+        except Exception as e:
+            QMessageBox.critical(self, "Failed to save settings", str(e))
+            return
+        QMessageBox.information(self, "Defaults saved", "Saved default FRF filtering configuration.")
 
     def _build_toolbar(self) -> None:
         tb = QToolBar("Main")
@@ -241,6 +275,35 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Failed to save settings", str(e))
 
+    def _on_frf_file_paths_changed(self, x_path: str, y_path: str) -> None:
+        if self._restoring_settings:
+            return
+        x_path = (x_path or "").strip()
+        y_path = (y_path or "").strip()
+        if (
+            x_path == (self._app_settings.last_frf_x_file or "")
+            and y_path == (self._app_settings.last_frf_y_file or "")
+        ):
+            return
+        self._app_settings.last_frf_x_file = x_path
+        self._app_settings.last_frf_y_file = y_path
+        try:
+            save_app_settings(self._repo_root, self._app_settings)
+        except Exception as e:
+            QMessageBox.critical(self, "Failed to save settings", str(e))
+
+    def _on_stability_file_path_changed(self, path: str) -> None:
+        if self._restoring_settings:
+            return
+        path = (path or "").strip()
+        if path == (self._app_settings.last_stability_file or ""):
+            return
+        self._app_settings.last_stability_file = path
+        try:
+            save_app_settings(self._repo_root, self._app_settings)
+        except Exception as e:
+            QMessageBox.critical(self, "Failed to save settings", str(e))
+
     def _load_default_experiment_cfg(self) -> dict:
         default_cfg_path = self._repo_root / "config" / "config_before_cabinet_assembly.json"
         try:
@@ -256,6 +319,7 @@ class MainWindow(QMainWindow):
             self._state.analysis_type = "stability_measurement"
         elif self._tabs.currentWidget() is self._frf_root:
             self._state.analysis_type = "frf"
+            self._state.experiment_cfg = self._frf_root.build_experiment_cfg()
 
     def _apply_state(self, st: AnalysisState) -> None:
         self._state = st
@@ -266,4 +330,8 @@ class MainWindow(QMainWindow):
             self._tabs.setCurrentWidget(self._stab_root)
         else:
             self._tabs.setCurrentWidget(self._frf_root)
+            try:
+                self._frf_root.apply_experiment_cfg(dict(st.experiment_cfg or {}))
+            except Exception as e:
+                QMessageBox.critical(self, "Failed to apply FRF state", str(e))
 

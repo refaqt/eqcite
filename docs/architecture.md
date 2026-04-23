@@ -32,6 +32,12 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 2. **Sensitivities** (`config/sensitivities.json`) scale or map channels when loading measurements.
 3. **Data source**:\n+   - `file`: CSV measurements are loaded through `load_data` using paths from the experiment config.\n+   - `simulation`: `simulate_system` generates time-series, and `load_data` normalizes them into the same signals dict shape.
 
+### Simulation parameter semantics
+
+- `simulation.model.mass`: kg
+- `simulation.model.stiffness`: N/m
+- `simulation.model.damping`: damping ratio ζ (dimensionless). The simulator derives the damping coefficient internally as \(c = 2\,\zeta\,\sqrt{k m}\).
+
 ## GUI architecture (PySide6)
 
 - **Entry point**: `python -m src.gui.app`
@@ -40,11 +46,25 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
   - `src/gui/state.py`: `AnalysisState` (in-memory session state)
   - `src/gui/persistence.py`: save/load `analysis.json` + app settings (`config/app_settings.json`)
   - `src/gui/plot_widgets.py`: Matplotlib embedding for result tabs
+- **FRF results tabs** (`src/gui/pages/frf.py`):
+  - `Raw signals (mosaic)`: plots raw channels A0..A7 (per direction when available)
+  - `Time signals (processing steps)`: single plot with a top-right selector (Force/Response for X/Y when available) and **clickable legend toggles** for raw/bias/window/windowed/filtered traces
+  - `FFT magnitude`: separate FFT magnitude view (toggleable traces via legend)
+  - `Coherence`: \(\gamma^2(f)\) vs frequency (experiment quality)
+  - `Force PSD`: force excitation PSD vs frequency
+  - `Real(FRF)`: real part of compliance and accelerance
 - **Persistence**:
   - An analysis is saved as a **folder** containing `analysis.json` plus `results/figures`, `results/tables`, and `results/logs`.
   - When saving from the GUI, FRF runs export their current figures + tables into `results/` so the folder is self-contained.
   - Global sensitivities are stored in `config/sensitivities.json` and are not duplicated per analysis folder.
-  - Per-user GUI defaults (folders, and default FRF sensor configuration) are stored in `config/app_settings.json`.
+  - Per-user GUI defaults (folders, default FRF sensor configuration, and last-selected input file paths) are stored in `config/app_settings.json`.
+
+### FRF analysis settings
+
+- In the FRF GUI (`src/gui/pages/frf.py`), the sidebar page **Analysis settings** contains:
+  - **input/output selection**: choose which normalized signal families are used as FRF input and output (Force `F_x/F_y`, Tool `x_tool/y_tool`, or Spindle `x_spindle/y_spindle`).
+  - **Filtering**: filter chains + parameters + windowing configuration (applied before FRF estimation).
+  - **Estimation**: FRF estimator selection (`H1`, `H2`, `Hv`, default `Hv`), passed into `src/frf_estimation.py::compute_frf_from_signals()` via `params['estimator_type']`.
 
 ## Embedded / firmware
 
