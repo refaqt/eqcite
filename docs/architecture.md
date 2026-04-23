@@ -59,6 +59,12 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
   - Global sensitivities are stored in `config/sensitivities.json` and are not duplicated per analysis folder.
   - Per-user GUI defaults (folders, default FRF sensor configuration, and last-selected input file paths) are stored in `config/app_settings.json`.
 
+### FRF analysis settings
+
+- In the FRF GUI (`src/gui/pages/frf.py`), the sidebar page **Analysis settings** contains:
+  - **Filtering**: filter chains + parameters + windowing configuration (applied before FRF estimation).
+  - **Estimation**: FRF estimator selection (`H1`, `H2`, `Hv`, default `Hv`), passed into `src/frf_estimation.py::compute_frf_from_signals()` via `params['estimator_type']`.
+
 ## Embedded / firmware
 
 Project context includes **Arduino + Python** workflows. This clone may not contain `.ino` sources; acquisition here is centered on **Python + pyserial** (e.g. `src/tools/data-acquisition.py` for DataQ DI-2108). Add a firmware subsection here when Arduino sketches live in-repo.

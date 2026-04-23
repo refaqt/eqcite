@@ -119,7 +119,7 @@ class FrfRootPage(QWidget):
         self._stack.addWidget(self._wrap(self._page_filtering))
         self._stack.addWidget(self._wrap(self._page_results))
 
-        for name in ["Input data", "Sensor configuration", "Filtering", "Results"]:
+        for name in ["Input data", "Sensor configuration", "Analysis settings", "Results"]:
             self._menu.addItem(QListWidgetItem(name))
         self._menu.setCurrentRow(0)
         self._menu.currentRowChanged.connect(self._stack.setCurrentIndex)
@@ -463,9 +463,11 @@ class FrfFilteringPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        title = QLabel("Filtering")
+        title = QLabel("Analysis settings")
         title.setStyleSheet("font-weight: 600;")
         layout.addWidget(title)
+
+        layout.addWidget(QLabel("Filtering"))
 
         entries = [("wiener", "Wiener"), ("savgol", "Savitzky–Golay")]
         chain_split = QSplitter(Qt.Orientation.Horizontal)
@@ -542,6 +544,24 @@ class FrfFilteringPage(QWidget):
 
         layout.addWidget(win_params)
 
+        # Estimation
+        layout.addWidget(QLabel("Estimation"))
+        est_box = QWidget()
+        est_form = QFormLayout(est_box)
+        est_form.setContentsMargins(0, 0, 0, 0)
+
+        self._estimator_type = QComboBox()
+        for nm in ["H1", "H2", "Hv"]:
+            self._estimator_type.addItem(nm, userData=nm)
+        # Default estimator is Hv (matches src/frf_estimation.get_system_parameters()).
+        self._estimator_type.setCurrentIndex(2)
+        est_form.addRow(QLabel("Estimator type"), self._estimator_type)
+
+        self._estimator_help = QLabel("")
+        self._estimator_help.setWordWrap(True)
+        est_form.addRow(QLabel(""), self._estimator_help)
+        layout.addWidget(est_box)
+
         self._btn_save_default = QPushButton("Save as default")
         self._btn_save_default.clicked.connect(self._on_save_default)
         layout.addWidget(self._btn_save_default)
@@ -575,12 +595,28 @@ class FrfFilteringPage(QWidget):
         self._resp_chain.changed.connect(self._refresh_preview)  # type: ignore[attr-defined]
         self._win_in_type.currentIndexChanged.connect(self._on_window_type_changed)
         self._win_out_type.currentIndexChanged.connect(self._on_window_type_changed)
+        self._estimator_type.currentIndexChanged.connect(self._on_estimator_changed)
 
         self._update_window_param_visibility()
+        self._update_estimator_help()
 
     def _on_window_type_changed(self) -> None:
         self._update_window_param_visibility()
         self._refresh_preview()
+
+    def _on_estimator_changed(self) -> None:
+        self._update_estimator_help()
+        self._refresh_preview()
+
+    def _update_estimator_help(self) -> None:
+        et = str(self._estimator_type.currentData() or "Hv")
+        if et == "H1":
+            txt = "H₁(ω) = Gᵧᵤ(ω) / Gᵤᵤ(ω)"
+        elif et == "H2":
+            txt = "H₂(ω) = Gᵧᵧ(ω) / Gᵧᵤ(ω)"
+        else:
+            txt = "Hᵥ(ω) = (Gᵧᵤ(ω)/|Gᵧᵤ(ω)|) · √(Gᵧᵧ(ω) / Gᵤᵤ(ω))"
+        self._estimator_help.setText(txt)
 
     def _update_window_param_visibility(self) -> None:
         in_type = str(self._win_in_type.currentData() or "hann")
@@ -646,6 +682,7 @@ class FrfFilteringPage(QWidget):
             return float((txt or "").strip() or "0")
 
         return {
+            "estimator_type": str(self._estimator_type.currentData() or "Hv"),
             "u_chain": self._u_chain.get_chain(),
             "resp_chain": self._resp_chain.get_chain(),
             "params": {
@@ -670,6 +707,15 @@ class FrfFilteringPage(QWidget):
 
     def apply_filtering_cfg(self, cfg: Dict[str, Any]) -> None:
         cfg = dict(cfg or {})
+        # Estimator
+        if "estimator_type" in cfg:
+            desired = str(cfg.get("estimator_type") or "Hv")
+            for idx in range(self._estimator_type.count()):
+                if self._estimator_type.itemData(idx) == desired:
+                    self._estimator_type.setCurrentIndex(idx)
+                    break
+        self._update_estimator_help()
+
         if isinstance(cfg.get("u_chain"), list):
             self._u_chain.set_chain(cfg.get("u_chain") or [])
         if isinstance(cfg.get("resp_chain"), list):
@@ -1056,6 +1102,7 @@ class FrfResultsPage(QWidget):
         # The experiment config is loaded via `_build_experiment_cfg()` and passed to load_data,
         # but the FRF computation itself is driven by `params` here.
         filtering = dict(self._filtering_cfg or {})
+        params["estimator_type"] = str(filtering.get("estimator_type") or params.get("estimator_type") or "Hv")
 
         u_proc, y_proc, params = apply_frf_filtering_and_windowing(
             time=time,

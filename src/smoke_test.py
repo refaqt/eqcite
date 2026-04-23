@@ -24,10 +24,15 @@ def smoke_compute_frf_from_signals() -> None:
     params["welch_nperseg"] = 2048
     params["welch_noverlap"] = 2000  # intentionally too large; should be clamped
 
-    f, H = frf_estimation.compute_frf_from_signals(t, u, y, params)
-    assert f.ndim == 1 and H.ndim == 1
-    assert len(f) == len(H)
-    assert np.isfinite(f).all()
+    for et in ["H1", "H2", "Hv"]:
+        params2 = dict(params)
+        params2["estimator_type"] = et
+        f, H = frf_estimation.compute_frf_from_signals(t, u, y, params2)
+        assert f.ndim == 1 and H.ndim == 1
+        assert len(f) == len(H)
+        assert np.isfinite(f).all()
+        assert np.isfinite(np.real(H)).all()
+        assert np.isfinite(np.imag(H)).all()
 
 
 def smoke_load_simulation_with_config() -> None:
