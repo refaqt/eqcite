@@ -765,33 +765,93 @@ class FrfResultsPage(QWidget):
 
         # Keep a mapping on the figure so the callback can find it after redraws.
         fig._legend_pick_map = {}  # type: ignore[attr-defined]
+        fig._legend_pick_map_text = {}  # type: ignore[attr-defined]
+        fig._legend_pick_map_patch = {}  # type: ignore[attr-defined]
 
         def _rebuild_map():
             m = {}
+            m_text = {}
+            m_patch = {}
             for ax in fig.axes:
                 leg = ax.get_legend()
                 if leg is None:
                     continue
-                for leg_line, orig_line in zip(leg.get_lines(), ax.get_lines()):
+                # Map legend entries to plotted lines by label (robust vs. line ordering differences).
+                lines_by_label = {ln.get_label(): ln for ln in ax.get_lines()}
+                leg_lines = list(leg.get_lines() or [])
+                leg_texts = list(leg.get_texts() or [])
+                leg_patches = list(getattr(leg, "legend_handles", []) or getattr(leg, "legendHandles", []) or [])
+                for leg_line, leg_text in zip(leg_lines, leg_texts):
+                    label = leg_text.get_text()
+                    orig_line = lines_by_label.get(label)
+                    if orig_line is None:
+                        continue
                     leg_line.set_picker(True)
                     leg_line.set_pickradius(5)
+                    leg_line.set_alpha(1.0 if orig_line.get_visible() else 0.2)
                     m[leg_line] = orig_line
+                    # Also allow clicking the legend text (common user behavior).
+                    try:
+                        leg_text.set_picker(True)
+                        m_text[leg_text] = orig_line
+                    except Exception:
+                        pass
+
+                # Some Matplotlib configurations use patch handles in legends.
+                for h in leg_patches:
+                    try:
+                        lbl = h.get_label()
+                    except Exception:
+                        continue
+                    orig_line = lines_by_label.get(lbl)
+                    if orig_line is None:
+                        continue
+                    try:
+                        h.set_picker(True)
+                        m_patch[h] = orig_line
+                    except Exception:
+                        pass
             fig._legend_pick_map = m  # type: ignore[attr-defined]
+            fig._legend_pick_map_text = m_text  # type: ignore[attr-defined]
+            fig._legend_pick_map_patch = m_patch  # type: ignore[attr-defined]
 
         def _on_pick(event):
             m = getattr(fig, "_legend_pick_map", {})
+            m_text = getattr(fig, "_legend_pick_map_text", {})
+            m_patch = getattr(fig, "_legend_pick_map_patch", {})
             artist = getattr(event, "artist", None)
-            if artist not in m:
+
+            if artist in m:
+                line = m[artist]
+                toggle_artist = artist
+            elif artist in m_text:
+                line = m_text[artist]
+                toggle_artist = None  # text alpha handling differs; skip
+            elif artist in m_patch:
+                line = m_patch[artist]
+                toggle_artist = artist
+            else:
                 return
-            line = m[artist]
-            vis = not line.get_visible()
+            before = bool(line.get_visible())
+            vis = not before
             line.set_visible(vis)
-            artist.set_alpha(1.0 if vis else 0.2)
+            if toggle_artist is not None:
+                toggle_artist.set_alpha(1.0 if vis else 0.2)
             canvas.draw_idle()
 
         _rebuild_map()
-        # Connect once per plot call (safe: mpl_connect returns id, but we don't need disconnect for now)
-        canvas.mpl_connect("pick_event", _on_pick)
+        # Connect once per plot call; disconnect any previous handler on this figure.
+        try:
+            old_cid = getattr(fig, "_legend_pick_cid", None)
+            if isinstance(old_cid, int):
+                canvas.mpl_disconnect(old_cid)
+        except Exception:
+            pass
+        cid = canvas.mpl_connect("pick_event", _on_pick)
+        try:
+            fig._legend_pick_cid = cid  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
     def _plot_raw_mosaic(
         self,
@@ -873,9 +933,10 @@ class FrfResultsPage(QWidget):
 
         # Plot helper
         def add_steps(ax, t: np.ndarray, steps: List[_SignalStep], prefix: str) -> None:
+            default_visible = {"raw", "bias_corrected", "window", "windowed", "wiener", "savgol"}
             for s in steps:
                 line = ax.plot(t, s.y, linewidth=1.0, label=f"{prefix}{s.name}")[0]
-                line.set_visible(s.name in {"raw", "bias_corrected", "windowed"})
+                line.set_visible(s.name in default_visible)
 
         title_map = {
             "force_x": "Force (X) processing steps",

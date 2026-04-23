@@ -61,3 +61,10 @@ Log errors, wrong approaches, and **prevention rules** so agents and humans do n
 **Fix applied:** Switched to PowerShell-native `Set-Location -Path "..."` (or `cd "..."` without `/d`).
 **Prevention rule:** In PowerShell, avoid `cmd.exe`-specific flags like `cd /d`; use `Set-Location` / `cd` with just the path.
 **Affected files:** None (command-line only)
+
+## Qt widget instantiated without QApplication — 2026-04-23
+**What happened:** A smoke test tried to instantiate `FrfResultsPage` directly in a Python one-liner, and the process crashed because Qt widgets require an active `QApplication`.
+**Root cause:** Assumed importing the module was enough for a lightweight instantiation test; forgot Qt’s requirement for a running application object.
+**Fix applied:** Switched the smoke test to create a minimal `QApplication([])` before creating any `QWidget`.
+**Prevention rule:** For Qt/PySide6 smoke tests, always create `QApplication` before instantiating any `QWidget` (or limit smoke tests to import-only).
+**Affected files:** None (command-line only)
