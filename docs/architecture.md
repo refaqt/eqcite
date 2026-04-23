@@ -62,6 +62,7 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 ### FRF analysis settings
 
 - In the FRF GUI (`src/gui/pages/frf.py`), the sidebar page **Analysis settings** contains:
+  - **input/output selection**: choose which normalized signal families are used as FRF input and output (Force `F_x/F_y`, Tool `x_tool/y_tool`, or Spindle `x_spindle/y_spindle`).
   - **Filtering**: filter chains + parameters + windowing configuration (applied before FRF estimation).
   - **Estimation**: FRF estimator selection (`H1`, `H2`, `Hv`, default `Hv`), passed into `src/frf_estimation.py::compute_frf_from_signals()` via `params['estimator_type']`.
 

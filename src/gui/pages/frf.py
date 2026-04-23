@@ -467,7 +467,28 @@ class FrfFilteringPage(QWidget):
         title.setStyleSheet("font-weight: 600;")
         layout.addWidget(title)
 
-        layout.addWidget(QLabel("Filtering"))
+        # Output selection (input is fixed to Force F_x/F_y)
+        io_header = QLabel("Output selection")
+        io_header.setStyleSheet("font-weight: 600; font-style: italic;")
+        layout.addWidget(io_header)
+        io_box = QWidget()
+        io_form = QFormLayout(io_box)
+        io_form.setContentsMargins(0, 0, 0, 0)
+
+        self._io_output_family = QComboBox()
+        for key, label in [
+            ("tool", "Tool (x_tool/y_tool)"),
+            ("spindle", "Spindle (x_spindle/y_spindle)"),
+        ]:
+            self._io_output_family.addItem(label, userData=key)
+        # Default matches previous behavior (force input -> tool output)
+        self._io_output_family.setCurrentIndex(0)
+        io_form.addRow(QLabel("Output"), self._io_output_family)
+        layout.addWidget(io_box)
+
+        filtering_header = QLabel("Filtering")
+        filtering_header.setStyleSheet("font-weight: 600; font-style: italic;")
+        layout.addWidget(filtering_header)
 
         entries = [("wiener", "Wiener"), ("savgol", "Savitzky–Golay")]
         chain_split = QSplitter(Qt.Orientation.Horizontal)
@@ -545,7 +566,9 @@ class FrfFilteringPage(QWidget):
         layout.addWidget(win_params)
 
         # Estimation
-        layout.addWidget(QLabel("Estimation"))
+        estimation_header = QLabel("Estimation")
+        estimation_header.setStyleSheet("font-weight: 600; font-style: italic;")
+        layout.addWidget(estimation_header)
         est_box = QWidget()
         est_form = QFormLayout(est_box)
         est_form.setContentsMargins(0, 0, 0, 0)
@@ -596,6 +619,7 @@ class FrfFilteringPage(QWidget):
         self._win_in_type.currentIndexChanged.connect(self._on_window_type_changed)
         self._win_out_type.currentIndexChanged.connect(self._on_window_type_changed)
         self._estimator_type.currentIndexChanged.connect(self._on_estimator_changed)
+        self._io_output_family.currentIndexChanged.connect(self._refresh_preview)
 
         self._update_window_param_visibility()
         self._update_estimator_help()
@@ -683,6 +707,10 @@ class FrfFilteringPage(QWidget):
 
         return {
             "estimator_type": str(self._estimator_type.currentData() or "Hv"),
+            "io_selection": {
+                "input_family": "force",
+                "output_family": str(self._io_output_family.currentData() or "tool"),
+            },
             "u_chain": self._u_chain.get_chain(),
             "resp_chain": self._resp_chain.get_chain(),
             "params": {
@@ -707,6 +735,18 @@ class FrfFilteringPage(QWidget):
 
     def apply_filtering_cfg(self, cfg: Dict[str, Any]) -> None:
         cfg = dict(cfg or {})
+        # IO selection
+        io_sel = cfg.get("io_selection") or {}
+        if isinstance(io_sel, dict):
+            def _set_combo(cb: QComboBox, value: str) -> None:
+                for idx in range(cb.count()):
+                    if cb.itemData(idx) == value:
+                        cb.setCurrentIndex(idx)
+                        return
+
+            if "output_family" in io_sel:
+                _set_combo(self._io_output_family, str(io_sel.get("output_family") or "tool"))
+
         # Estimator
         if "estimator_type" in cfg:
             desired = str(cfg.get("estimator_type") or "Hv")
@@ -735,12 +775,6 @@ class FrfFilteringPage(QWidget):
 
         win = cfg.get("windowing") or {}
         if isinstance(win, dict):
-            def _set_combo(cb: QComboBox, value: str) -> None:
-                for idx in range(cb.count()):
-                    if cb.itemData(idx) == value:
-                        cb.setCurrentIndex(idx)
-                        return
-
             _set_combo(self._win_in_type, str(win.get("input_window_type") or "hann"))
             _set_combo(self._win_out_type, str(win.get("output_window_type") or "exponential"))
 
@@ -1082,16 +1116,40 @@ class FrfResultsPage(QWidget):
         if data is None:
             return None, None
 
-        # Heuristic: prefer configured names if present, else fall back.
-        # For config-driven pipeline, expected: F_x/F_y and x_tool/y_tool exist when sensors available.
-        u_name = "F_x" if direction == "x" else "F_y"
-        y_name = "x_tool" if direction == "x" else "y_tool"
+        def _key_for_family(family: str, direction: str) -> str:
+            family = (family or "").strip().lower()
+            if family == "force":
+                return "F_x" if direction == "x" else "F_y"
+            if family == "tool":
+                return "x_tool" if direction == "x" else "y_tool"
+            if family == "spindle":
+                return "x_spindle" if direction == "x" else "y_spindle"
+            raise ValueError(f"Unknown IO family '{family}' (expected force/tool/spindle)")
 
-        if u_name not in data or y_name not in data:
-            # Try spindle signals as fallback
-            y_name = "x_spindle" if direction == "x" else "y_spindle"
-        if u_name not in data or y_name not in data or data[y_name] is None:
-            raise ValueError(f"Missing required signals for {direction}: need {u_name} and {y_name}")
+        io_sel = (self._filtering_cfg or {}).get("io_selection")
+        if isinstance(io_sel, dict):
+            in_family = str(io_sel.get("input_family") or "force")
+            out_family = str(io_sel.get("output_family") or "tool")
+            u_name = _key_for_family(in_family, direction)
+            y_name = _key_for_family(out_family, direction)
+            if u_name not in data:
+                raise ValueError(
+                    f"Missing required input signal for {direction}: '{u_name}' (from input_family={in_family})"
+                )
+            if y_name not in data or data.get(y_name) is None:
+                raise ValueError(
+                    f"Missing required output signal for {direction}: '{y_name}' (from output_family={out_family})"
+                )
+        else:
+            # Backward-compat: previous heuristic (force -> tool, else spindle fallback).
+            u_name = "F_x" if direction == "x" else "F_y"
+            y_name = "x_tool" if direction == "x" else "y_tool"
+
+            if u_name not in data or y_name not in data:
+                # Try spindle signals as fallback
+                y_name = "x_spindle" if direction == "x" else "y_spindle"
+            if u_name not in data or y_name not in data or data[y_name] is None:
+                raise ValueError(f"Missing required signals for {direction}: need {u_name} and {y_name}")
 
         time = np.asarray(data["time"])
         u = np.asarray(data[u_name], dtype=float)
