@@ -48,11 +48,18 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
   - `src/gui/plot_widgets.py`: Matplotlib embedding for result tabs
 - **FRF results tabs** (`src/gui/pages/frf.py`):
   - `Raw signals (mosaic)`: plots raw channels A0..A7 (per direction when available)
-  - `Time signals (processing steps)`: single plot with a top-right selector (Force/Response for X/Y when available) and **clickable legend toggles** for raw/bias/window/windowed/filtered traces
-  - `FFT magnitude`: separate FFT magnitude view (toggleable traces via legend)
-  - `Coherence`: \(\gamma^2(f)\) vs frequency (experiment quality)
-  - `Force PSD`: force excitation PSD vs frequency
-  - `Real(FRF)`: real part of compliance and accelerance
+  - `Time signals (processing steps)`: plot with per-direction measurement selection + Force/Response selector, and **clickable legend toggles** for raw/bias/window/windowed/filtered traces
+  - `FFT magnitude`: FFT magnitude view; supports optional **Average** overlay computed in complex FFT space
+  - `Coherence`: \(\gamma^2(f)\) vs frequency; supports optional **Average** overlay derived from averaged spectra terms
+  - `Force PSD`: force excitation PSD vs frequency; supports optional **Average** overlay from averaged PSD
+  - `Real(FRF)`: real part of compliance and accelerance; supports optional **Average** overlay from averaged complex FRF
+  - `Bode (displacement/force)` and `Bode (acceleration/force)`: magnitude/phase plots; supports optional **Average** overlay from averaged complex FRF
+
+### Multi-measurement FRF behavior
+
+- FRF input supports selecting **multiple CSV files per direction** (X and/or Y). X and Y are treated as **independent** lists (no pairing).
+- Each results tab has **X and Y measurement dropdowns** labeled by filename, which control which single measurement is displayed for that direction.
+- Frequency-domain tabs include an **Average** checkbox that overlays an additional **black** trace computed by averaging the **complex frequency components first** (then converting to magnitude/phase/real as appropriate).
 - **Persistence**:
   - An analysis is saved as a **folder** containing `analysis.json` plus `results/figures`, `results/tables`, and `results/logs`.
   - When saving from the GUI, FRF runs export their current figures + tables into `results/` so the folder is self-contained.

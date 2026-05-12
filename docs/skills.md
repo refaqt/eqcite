@@ -156,6 +156,36 @@ def _on_frf_file_paths_changed(self, x: str, y: str) -> None:
 
 ---
 
+## Multi-measurement selectors + complex averaging overlays (FRF GUI)
+**When to use:** You’re extending the FRF GUI to handle repeated measurements per direction and want both per-measurement selection and a physically correct “average” in frequency space.
+**Pattern:**
+```python
+# 1) Represent per-direction measurements as a list, keep per-measurement filepath
+self._x_measurements: list[_DirectionalMeasurement] = []
+self._y_measurements: list[_DirectionalMeasurement] = []
+
+# 2) In each results tab, provide X/Y dropdowns (filename labels)
+#    and store per-tab selected indices.
+self._tab_selectors: dict[str, tuple[QComboBox, QComboBox]] = {}
+self._tab_sel_idx: dict[str, tuple[int, int]] = {}
+
+# 3) For averaging: average complex frequency components first.
+H_avg = np.mean(np.stack(H_list, axis=0), axis=0)  # complex mean
+mag = np.abs(H_avg)
+phase_deg = np.unwrap(np.angle(H_avg)) * 180 / np.pi
+
+# 4) For coherence: average spectra terms, then compute coherence.
+Pur_avg = np.mean(np.stack(Pur_list, axis=0), axis=0)  # complex
+Puu_avg = np.mean(np.stack(Puu_list, axis=0), axis=0)  # real
+Prr_avg = np.mean(np.stack(Prr_list, axis=0), axis=0)  # real
+coh = (np.abs(Pur_avg) ** 2) / ((Puu_avg * Prr_avg) + 1e-30)
+```
+**Gotchas:**
+- Don’t average magnitudes/phases directly; that can be wrong when phases differ.\n- Ensure all measurements use the same frequency grid (same sampling + Welch settings). If grids can differ, you must align/interpolate real/imag parts before averaging.\n- For FFT magnitude averaging, store/average the **complex rFFT bins** and only then take `abs()`.
+**Last used:** 2026-05-12
+
+---
+
 ## Scale window overlay in time-signal plots
 **When to use:** You plot a window function alongside time-domain processing steps and want it visible at the same amplitude scale as the signal being windowed.
 **Pattern:**

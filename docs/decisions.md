@@ -68,3 +68,12 @@ Lightweight log of **non-obvious** technical choices. Add an entry when picking 
 **Consequences:**
 - Keeps the GUI lightweight and consistent with existing Matplotlib embedding.
 - Requires re-wiring pick handlers after re-plotting, but avoids building a parallel UI for visibility state.
+
+## Multi-measurement FRF + complex-domain averaging — 2026-05-12
+**Context:** Users often record repeated tap tests per direction (X/Y). We need to compare individual measurements under identical analysis settings and also compute a representative average trace. Averaging must be physically meaningful for complex frequency-domain quantities.
+
+**Decision:** Support selecting **multiple measurement CSVs per direction** in the FRF GUI. In each results tab, let users select the displayed measurement via a **filename dropdown**. For frequency-domain results (FFT magnitude, Coherence, Force PSD, Real(FRF), Bode plots), add an **Average** checkbox that overlays an additional **black** trace computed by averaging **complex frequency components first** and only then computing magnitude/phase/real.\n\nFor coherence/PSD, average the underlying spectra terms on the frequency grid: \n- \u0304P_ur = mean(P_ur), \u0304P_uu = mean(P_uu), \u0304P_rr = mean(P_rr)\n- \u03b3\u00b2 = |\u0304P_ur|^2 / (\u0304P_uu \u0304P_rr)
+
+**Alternatives considered:**\n- Average magnitude/phase directly (incorrect for complex data)\n- Use pyFRF’s multi-tap averaging path everywhere (larger refactor; GUI currently uses a lighter SciPy-based path)\n- Pair X and Y measurements by index (not desired; X/Y should be independent)
+
+**Consequences:**\n- Additional UI state (per-tab measurement selection, per-tab average toggle).\n- Requires retaining complex FFT bins and Welch/CSD spectra terms in the GUI processing structure.\n- Produces averages that respect complex cancellation/phase, aligning with standard FRF practice.

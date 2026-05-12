@@ -209,14 +209,14 @@ def load_directional_data(
 
     Returns:
       dict with optional keys:
-        - x: signals dict for x-direction
-        - y: signals dict for y-direction
+        - x: list of signals dicts for x-direction measurements
+        - y: list of signals dicts for y-direction measurements
     """
     data_source = experiment_cfg.get("data_source", "file")
     if data_source == "simulation":
         sim = load_simulation_with_config(experiment_cfg)
         # For simulation we provide both directions if the signals exist.
-        return {"x": sim, "y": sim}
+        return {"x": [sim], "y": [sim]}
 
     if data_source != "file":
         raise ValueError(f"Unknown data_source: {data_source}")
@@ -226,9 +226,9 @@ def load_directional_data(
     file_paths_y = [Path(p) for p in experiment_cfg.get("file_paths_y", [])]
 
     if file_paths_x:
-        out["x"] = load_measurement_file_with_config(file_paths_x[0], experiment_cfg, sensitivities)
+        out["x"] = [load_measurement_file_with_config(p, experiment_cfg, sensitivities) for p in file_paths_x]
     if file_paths_y:
-        out["y"] = load_measurement_file_with_config(file_paths_y[0], experiment_cfg, sensitivities)
+        out["y"] = [load_measurement_file_with_config(p, experiment_cfg, sensitivities) for p in file_paths_y]
 
     return out
 

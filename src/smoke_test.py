@@ -49,7 +49,9 @@ def smoke_load_simulation_with_config() -> None:
     directional = load_data.load_directional_data(exp_cfg, sens)
     assert "x" in directional and "y" in directional
     for key in ("x", "y"):
-        d = directional[key]
+        lst = directional[key]
+        assert isinstance(lst, list) and len(lst) >= 1
+        d = lst[0]
         assert d["time"] is not None
         assert "F_x" in d and "F_y" in d
         assert "x_tool" in d and "y_tool" in d
@@ -64,6 +66,10 @@ def smoke_load_simulation_with_config() -> None:
 def run() -> None:
     smoke_compute_frf_from_signals()
     smoke_load_simulation_with_config()
+    # Minimal sanity: complex-mean averaging differs from magnitude-mean.
+    z = np.array([1.0 + 0.0j, -1.0 + 0.0j])
+    assert abs(np.mean(z)) < 1e-12
+    assert abs(np.mean(np.abs(z)) - 1.0) < 1e-12
 
 
 if __name__ == "__main__":

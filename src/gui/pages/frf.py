@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QComboBox,
+    QHBoxLayout,
+    QCheckBox,
     QVBoxLayout,
     QVBoxLayout,
     QWidget,
@@ -40,8 +42,8 @@ from ..plot_widgets import MatplotlibFigureWidget
 @dataclass
 class FrfInputModel:
     data_source: str = "file"  # "file" | "simulation"
-    file_path_x: str = ""
-    file_path_y: str = ""
+    file_paths_x: List[str] = None  # type: ignore[assignment]
+    file_paths_y: List[str] = None  # type: ignore[assignment]
     simulation: Dict[str, Any] = None  # type: ignore[assignment]
     channel_mapping: Dict[str, int] = None  # type: ignore[assignment]
     sensitivity_mapping: Dict[str, str] = None  # type: ignore[assignment]
@@ -77,17 +79,31 @@ class _DirectionalProcessing:
     f_hz: np.ndarray
     psd_u: np.ndarray
     coherence_uy: np.ndarray
+    csd_ur: np.ndarray
+    psd_r: np.ndarray
 
     # FFT magnitude (separate plot) for selected steps (raw + last filtered + windowed)
     fft_f_hz: np.ndarray
     fft_u_mag: Dict[str, np.ndarray]  # step-name -> |FFT|
     fft_resp_mag: Dict[str, np.ndarray]
+    fft_u_complex: Dict[str, np.ndarray]  # step-name -> FFT complex
+    fft_resp_complex: Dict[str, np.ndarray]
+
+
+@dataclass
+class _DirectionalMeasurement:
+    direction: str  # "x" | "y"
+    filepath: Optional[str]
+    raw_channels: Optional[Dict[int, np.ndarray]]
+    proc: _DirectionalProcessing
+    compliance: Tuple[np.ndarray, np.ndarray]  # (f_hz, H_disp_over_force complex)
+    accelerance: Tuple[np.ndarray, np.ndarray]  # (f_hz, H_accel_over_force complex)
 
 
 class FrfRootPage(QWidget):
     default_sensor_config_save_requested = Signal(dict, dict, dict)
     default_filtering_save_requested = Signal(dict)
-    file_paths_changed = Signal(str, str)  # (x_path, y_path)
+    file_paths_changed = Signal(object, object)  # (x_paths, y_paths) where each is List[str]
 
     def __init__(self) -> None:
         super().__init__()
@@ -100,6 +116,8 @@ class FrfRootPage(QWidget):
         base = json_load(cfg_path) if cfg_path.exists() else {}
         self._input_model = FrfInputModel(
             simulation={},
+            file_paths_x=[],
+            file_paths_y=[],
             channel_mapping=dict(base.get("channel_mapping", {}) or {}),
             sensitivity_mapping=dict(base.get("sensitivity_mapping", {}) or {}),
         )
@@ -140,8 +158,8 @@ class FrfRootPage(QWidget):
     def set_default_load_dir(self, path: str) -> None:
         self._page_input.set_default_load_dir(path)
 
-    def set_file_paths(self, x_path: str, y_path: str) -> None:
-        self._page_input.set_file_paths(x_path, y_path)
+    def set_file_paths(self, x_paths: List[str], y_paths: List[str]) -> None:
+        self._page_input.set_file_paths(list(x_paths or []), list(y_paths or []))
 
     def apply_default_sensor_config(
         self,
@@ -182,13 +200,13 @@ class FrfRootPage(QWidget):
 
 
 class FrfInputPage(QWidget):
-    file_paths_changed = Signal(str, str)  # (x_path, y_path)
+    file_paths_changed = Signal(object, object)  # (x_paths, y_paths)
 
     def __init__(self, model: FrfInputModel) -> None:
         super().__init__()
         self._model = model
         self._default_load_dir = ""
-        self._last_emitted_paths: Tuple[str, str] = ("", "")
+        self._last_emitted_paths: Tuple[Tuple[str, ...], Tuple[str, ...]] = (tuple(), tuple())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -221,25 +239,41 @@ class FrfInputPage(QWidget):
         file_form = QFormLayout(self._file_box)
         file_form.setContentsMargins(0, 0, 0, 0)
 
-        self._x_path = QLineEdit()
+        self._x_list = QListWidget()
+        self._x_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self._x_browse = QPushButton("Browse…")
-        self._x_browse.clicked.connect(lambda: self._browse_into(self._x_path))
+        self._x_browse.clicked.connect(lambda: self._browse_into_list(self._x_list))
+        self._x_clear = QPushButton("Clear")
+        self._x_clear.clicked.connect(lambda: self._clear_list(self._x_list))
         x_row = QWidget()
         x_l = QVBoxLayout(x_row)
         x_l.setContentsMargins(0, 0, 0, 0)
-        x_l.addWidget(self._x_path)
-        x_l.addWidget(self._x_browse)
-        file_form.addRow("X file", x_row)
+        x_l.addWidget(self._x_list, 1)
+        x_btns = QWidget()
+        x_btns_l = QHBoxLayout(x_btns)
+        x_btns_l.setContentsMargins(0, 0, 0, 0)
+        x_btns_l.addWidget(self._x_browse)
+        x_btns_l.addWidget(self._x_clear)
+        x_l.addWidget(x_btns)
+        file_form.addRow("X files", x_row)
 
-        self._y_path = QLineEdit()
+        self._y_list = QListWidget()
+        self._y_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self._y_browse = QPushButton("Browse…")
-        self._y_browse.clicked.connect(lambda: self._browse_into(self._y_path))
+        self._y_browse.clicked.connect(lambda: self._browse_into_list(self._y_list))
+        self._y_clear = QPushButton("Clear")
+        self._y_clear.clicked.connect(lambda: self._clear_list(self._y_list))
         y_row = QWidget()
         y_l = QVBoxLayout(y_row)
         y_l.setContentsMargins(0, 0, 0, 0)
-        y_l.addWidget(self._y_path)
-        y_l.addWidget(self._y_browse)
-        file_form.addRow("Y file", y_row)
+        y_l.addWidget(self._y_list, 1)
+        y_btns = QWidget()
+        y_btns_l = QHBoxLayout(y_btns)
+        y_btns_l.setContentsMargins(0, 0, 0, 0)
+        y_btns_l.addWidget(self._y_browse)
+        y_btns_l.addWidget(self._y_clear)
+        y_l.addWidget(y_btns)
+        file_form.addRow("Y files", y_row)
 
         layout.addWidget(self._file_box)
 
@@ -273,8 +307,6 @@ class FrfInputPage(QWidget):
         # Ensure manual edits are reflected in the model before running.
         # (Previously we only synced on browse + mode toggle, so typed values were ignored.)
         for le in [
-            self._x_path,
-            self._y_path,
             self._sim_mass,
             self._sim_stiff,
             self._sim_damp,
@@ -285,25 +317,69 @@ class FrfInputPage(QWidget):
         ]:
             le.editingFinished.connect(self._sync_model_from_ui)
 
+        self._x_list.itemChanged.connect(self._sync_model_from_ui)
+        self._y_list.itemChanged.connect(self._sync_model_from_ui)
+
     def set_default_load_dir(self, path: str) -> None:
         self._default_load_dir = path or ""
 
-    def set_file_paths(self, x_path: str, y_path: str) -> None:
-        self._x_path.setText(x_path or "")
-        self._y_path.setText(y_path or "")
+    def set_file_paths(self, x_paths: List[str], y_paths: List[str]) -> None:
+        self._set_list_items(self._x_list, x_paths or [])
+        self._set_list_items(self._y_list, y_paths or [])
         self._sync_model_from_ui()
 
-    def _browse_into(self, line_edit: QLineEdit) -> None:
-        p, _ = QFileDialog.getOpenFileName(
+    def _browse_into_list(self, list_widget: QListWidget) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
             self,
             "Select CSV file",
             self._default_load_dir,
             "CSV (*.csv);;All files (*)",
         )
-        if not p:
+        if not paths:
             return
-        line_edit.setText(p)
+        current = self._get_list_items(list_widget)
+        merged = current + [p for p in paths if isinstance(p, str) and p.strip()]
+        self._set_list_items(list_widget, merged)
         self._sync_model_from_ui()
+
+    @staticmethod
+    def _clear_list(list_widget: QListWidget) -> None:
+        list_widget.clear()
+
+    @staticmethod
+    def _get_list_items(list_widget: QListWidget) -> List[str]:
+        out: List[str] = []
+        for i in range(list_widget.count()):
+            it = list_widget.item(i)
+            if it is None:
+                continue
+            s = (it.text() or "").strip()
+            if s:
+                out.append(s)
+        return out
+
+    @staticmethod
+    def _set_list_items(list_widget: QListWidget, paths: List[str]) -> None:
+        # Deduplicate while preserving order.
+        seen: set[str] = set()
+        uniq: List[str] = []
+        for p in paths:
+            if p is None:
+                continue
+            s = str(p).strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            uniq.append(s)
+        list_widget.blockSignals(True)
+        try:
+            list_widget.clear()
+            for p in uniq:
+                it = QListWidgetItem(p)
+                it.setFlags(it.flags() | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                list_widget.addItem(it)
+        finally:
+            list_widget.blockSignals(False)
 
     def _on_mode_changed(self) -> None:
         self._file_box.setEnabled(self._rb_file.isChecked())
@@ -312,12 +388,12 @@ class FrfInputPage(QWidget):
 
     def _sync_model_from_ui(self) -> None:
         self._model.data_source = "simulation" if self._rb_sim.isChecked() else "file"
-        self._model.file_path_x = self._x_path.text().strip()
-        self._model.file_path_y = self._y_path.text().strip()
-        cur_paths = (self._model.file_path_x, self._model.file_path_y)
+        self._model.file_paths_x = self._get_list_items(self._x_list)
+        self._model.file_paths_y = self._get_list_items(self._y_list)
+        cur_paths = (tuple(self._model.file_paths_x or []), tuple(self._model.file_paths_y or []))
         if cur_paths != self._last_emitted_paths:
             self._last_emitted_paths = cur_paths
-            self.file_paths_changed.emit(cur_paths[0], cur_paths[1])
+            self.file_paths_changed.emit(list(cur_paths[0]), list(cur_paths[1]))
         self._model.simulation = {
             "fs": float(self._sim_fs.text()),
             "T": float(self._sim_T.text()),
@@ -804,6 +880,10 @@ class FrfResultsPage(QWidget):
         super().__init__()
         self._model = model
         self._filtering_cfg: Dict[str, Any] = {}
+        self._x_measurements: List[_DirectionalMeasurement] = []
+        self._y_measurements: List[_DirectionalMeasurement] = []
+        self._sel_x_idx: int = 0
+        self._sel_y_idx: int = 0
         self._last_x: Optional[_DirectionalFrfResult] = None
         self._last_y: Optional[_DirectionalFrfResult] = None
         self._last_proc_x: Optional[_DirectionalProcessing] = None
@@ -825,6 +905,9 @@ class FrfResultsPage(QWidget):
         layout.addWidget(self._run_btn)
 
         self._tabs = QTabWidget()
+        self._tab_selectors: Dict[str, Tuple[QComboBox, QComboBox]] = {}
+        self._tab_sel_idx: Dict[str, Tuple[int, int]] = {}
+        self._tab_average_checks: Dict[str, QCheckBox] = {}
         self._tab_bode_disp = MatplotlibFigureWidget()
         self._tab_bode_accel = MatplotlibFigureWidget()
         self._tab_time_steps = MatplotlibFigureWidget()
@@ -836,17 +919,11 @@ class FrfResultsPage(QWidget):
         self._time_steps_mode_combo.addItem("Response (Y)", userData="resp_y")
         self._time_steps_mode_combo.currentIndexChanged.connect(self._on_time_steps_mode_changed)
 
-        time_steps_container = QWidget()
-        time_steps_layout = QVBoxLayout(time_steps_container)
-        time_steps_layout.setContentsMargins(0, 0, 0, 0)
-        # Combo at top-right (simple alignment via an inner row)
-        combo_row = QWidget()
-        combo_row_l = QVBoxLayout(combo_row)
-        combo_row_l.setContentsMargins(0, 0, 0, 0)
-        combo_row_l.setAlignment(Qt.AlignmentFlag.AlignRight)
-        combo_row_l.addWidget(self._time_steps_mode_combo)
-        time_steps_layout.addWidget(combo_row)
-        time_steps_layout.addWidget(self._tab_time_steps, 1)
+        time_steps_container = self._wrap_tab_with_selectors(
+            tab_id="time_steps",
+            plot_widget=self._tab_time_steps,
+            extra_controls=[self._time_steps_mode_combo],
+        )
 
         self._tab_fft_mag = MatplotlibFigureWidget()
         self._tab_coherence = MatplotlibFigureWidget()
@@ -854,15 +931,221 @@ class FrfResultsPage(QWidget):
         self._tab_real_frf = MatplotlibFigureWidget()
         self._tab_raw_mosaic = MatplotlibFigureWidget()
 
-        self._tabs.addTab(self._tab_raw_mosaic, "Raw signals (mosaic)")
+        self._tabs.addTab(self._wrap_tab_with_selectors(tab_id="raw_mosaic", plot_widget=self._tab_raw_mosaic), "Raw signals (mosaic)")
         self._tabs.addTab(time_steps_container, "Time signals (processing steps)")
-        self._tabs.addTab(self._tab_fft_mag, "FFT magnitude")
-        self._tabs.addTab(self._tab_coherence, "Coherence")
-        self._tabs.addTab(self._tab_force_psd, "Force PSD")
-        self._tabs.addTab(self._tab_real_frf, "Real(FRF)")
-        self._tabs.addTab(self._tab_bode_disp, "Bode (displacement/force)")
-        self._tabs.addTab(self._tab_bode_accel, "Bode (acceleration/force)")
+        self._tabs.addTab(self._wrap_tab_with_selectors(tab_id="fft_mag", plot_widget=self._tab_fft_mag, add_average=True), "FFT magnitude")
+        self._tabs.addTab(self._wrap_tab_with_selectors(tab_id="coherence", plot_widget=self._tab_coherence, add_average=True), "Coherence")
+        self._tabs.addTab(self._wrap_tab_with_selectors(tab_id="force_psd", plot_widget=self._tab_force_psd, add_average=True), "Force PSD")
+        self._tabs.addTab(self._wrap_tab_with_selectors(tab_id="real_frf", plot_widget=self._tab_real_frf, add_average=True), "Real(FRF)")
+        self._tabs.addTab(self._wrap_tab_with_selectors(tab_id="bode_disp", plot_widget=self._tab_bode_disp, add_average=True), "Bode (displacement/force)")
+        self._tabs.addTab(self._wrap_tab_with_selectors(tab_id="bode_accel", plot_widget=self._tab_bode_accel, add_average=True), "Bode (acceleration/force)")
         layout.addWidget(self._tabs, 1)
+
+    def _wrap_tab_with_selectors(
+        self,
+        *,
+        tab_id: str,
+        plot_widget: MatplotlibFigureWidget,
+        extra_controls: Optional[List[QWidget]] = None,
+        add_average: bool = False,
+    ) -> QWidget:
+        """
+        Create a standard tab container with a top selector row:
+          X measurement dropdown + Y measurement dropdown (+ optional extra controls),
+        then the Matplotlib plot widget below.
+        """
+        extra_controls = list(extra_controls or [])
+
+        container = QWidget()
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(0, 0, 0, 0)
+
+        row = QWidget()
+        row_l = QHBoxLayout(row)
+        row_l.setContentsMargins(0, 0, 0, 0)
+        row_l.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+        x_cb = QComboBox()
+        y_cb = QComboBox()
+        x_cb.setMinimumWidth(250)
+        y_cb.setMinimumWidth(250)
+        x_cb.currentIndexChanged.connect(lambda _idx, tid=tab_id: self._on_measurement_changed(tid, "x"))
+        y_cb.currentIndexChanged.connect(lambda _idx, tid=tab_id: self._on_measurement_changed(tid, "y"))
+
+        self._tab_selectors[tab_id] = (x_cb, y_cb)
+        self._tab_sel_idx[tab_id] = (0, 0)
+
+        row_l.addWidget(QLabel("X"))
+        row_l.addWidget(x_cb)
+        row_l.addSpacing(10)
+        row_l.addWidget(QLabel("Y"))
+        row_l.addWidget(y_cb)
+
+        if add_average:
+            avg = QCheckBox("Average")
+            avg.stateChanged.connect(lambda _st, tid=tab_id: self._redraw_tab(tid))
+            self._tab_average_checks[tab_id] = avg
+            row_l.addSpacing(10)
+            row_l.addWidget(avg)
+
+        for w in extra_controls:
+            row_l.addSpacing(10)
+            row_l.addWidget(w)
+
+        lay.addWidget(row)
+        lay.addWidget(plot_widget, 1)
+        return container
+
+    @staticmethod
+    def _disambiguate_labels(paths: List[str]) -> List[str]:
+        """
+        Turn file paths into display labels. If multiple share the same basename, append parent folder.
+        """
+        names = [Path(p).name if p else "" for p in paths]
+        counts: Dict[str, int] = {}
+        for nm in names:
+            counts[nm] = counts.get(nm, 0) + 1
+        out: List[str] = []
+        for p, nm in zip(paths, names):
+            if not p:
+                out.append("(missing)")
+                continue
+            if counts.get(nm, 0) <= 1:
+                out.append(nm)
+            else:
+                par = Path(p).parent.name
+                out.append(f"{nm}  ({par})")
+        return out
+
+    def _populate_measurement_dropdowns(self) -> None:
+        x_paths = [str(m.filepath or "") for m in (self._x_measurements or [])]
+        y_paths = [str(m.filepath or "") for m in (self._y_measurements or [])]
+        x_labels = self._disambiguate_labels(x_paths)
+        y_labels = self._disambiguate_labels(y_paths)
+
+        for tab_id, (x_cb, y_cb) in (self._tab_selectors or {}).items():
+            x_cb.blockSignals(True)
+            y_cb.blockSignals(True)
+            try:
+                x_cb.clear()
+                y_cb.clear()
+                for i, lab in enumerate(x_labels):
+                    x_cb.addItem(lab, userData=i)
+                for i, lab in enumerate(y_labels):
+                    y_cb.addItem(lab, userData=i)
+
+                x_cb.setEnabled(len(x_labels) > 0)
+                y_cb.setEnabled(len(y_labels) > 0)
+
+                # Default selection per tab: first item if available.
+                if len(x_labels) > 0:
+                    x_cb.setCurrentIndex(0)
+                if len(y_labels) > 0:
+                    y_cb.setCurrentIndex(0)
+
+                self._tab_sel_idx[tab_id] = (0, 0)
+            finally:
+                x_cb.blockSignals(False)
+                y_cb.blockSignals(False)
+
+    def _get_selected_indices(self, tab_id: str) -> Tuple[int, int]:
+        return self._tab_sel_idx.get(tab_id, (0, 0))
+
+    def _get_selected_measurements(self, tab_id: str) -> Tuple[Optional[_DirectionalMeasurement], Optional[_DirectionalMeasurement]]:
+        x_idx, y_idx = self._get_selected_indices(tab_id)
+        x_sel = self._x_measurements[x_idx] if 0 <= x_idx < len(self._x_measurements) else None
+        y_sel = self._y_measurements[y_idx] if 0 <= y_idx < len(self._y_measurements) else None
+        return x_sel, y_sel
+
+    def _on_measurement_changed(self, tab_id: str, which: str) -> None:
+        x_cb, y_cb = self._tab_selectors.get(tab_id, (None, None))  # type: ignore[assignment]
+        if x_cb is None or y_cb is None:
+            return
+        x_idx = int(x_cb.currentData() or 0) if which in {"x", "both"} else self._get_selected_indices(tab_id)[0]
+        y_idx = int(y_cb.currentData() or 0) if which in {"y", "both"} else self._get_selected_indices(tab_id)[1]
+        self._tab_sel_idx[tab_id] = (x_idx, y_idx)
+        self._redraw_tab(tab_id)
+
+    def _redraw_tab(self, tab_id: str) -> None:
+        x_sel, y_sel = self._get_selected_measurements(tab_id)
+        avg_on = bool(self._tab_average_checks.get(tab_id).isChecked()) if tab_id in self._tab_average_checks else False
+
+        if tab_id == "raw_mosaic":
+            self._plot_raw_mosaic(
+                self._tab_raw_mosaic,
+                x_channels=(x_sel.raw_channels if x_sel else None),
+                y_channels=(y_sel.raw_channels if y_sel else None),
+            )
+            return
+
+        if tab_id == "time_steps":
+            self._refresh_time_steps_controls()
+            self._plot_time_processing_steps(
+                self._tab_time_steps,
+                x_proc=(x_sel.proc if x_sel else None),
+                y_proc=(y_sel.proc if y_sel else None),
+                mode=self._time_steps_mode,
+            )
+            return
+
+        if tab_id == "fft_mag":
+            self._plot_fft_magnitude(
+                self._tab_fft_mag,
+                x_proc=(x_sel.proc if x_sel else None),
+                y_proc=(y_sel.proc if y_sel else None),
+                avg_on=avg_on,
+            )
+            return
+        if tab_id == "coherence":
+            self._plot_coherence(
+                self._tab_coherence,
+                x_proc=(x_sel.proc if x_sel else None),
+                y_proc=(y_sel.proc if y_sel else None),
+                avg_on=avg_on,
+            )
+            return
+        if tab_id == "force_psd":
+            self._plot_force_psd(
+                self._tab_force_psd,
+                x_proc=(x_sel.proc if x_sel else None),
+                y_proc=(y_sel.proc if y_sel else None),
+                avg_on=avg_on,
+            )
+            return
+        if tab_id == "real_frf":
+            x_res = ((x_sel.compliance, x_sel.accelerance) if x_sel else None)
+            y_res = ((y_sel.compliance, y_sel.accelerance) if y_sel else None)
+            self._plot_real_frf(
+                self._tab_real_frf,
+                x_res=x_res,
+                y_res=y_res,
+                avg_on=avg_on,
+            )
+            return
+        if tab_id == "bode_disp":
+            self._plot_bode(
+                self._tab_bode_disp,
+                (x_sel.compliance if x_sel else None),
+                (y_sel.compliance if y_sel else None),
+                y_label="Compliance (m/N)",
+                title="Displacement/Force FRF",
+                avg_on=avg_on,
+                x_all=[m.compliance for m in (self._x_measurements or [])],
+                y_all=[m.compliance for m in (self._y_measurements or [])],
+            )
+            return
+        if tab_id == "bode_accel":
+            self._plot_bode(
+                self._tab_bode_accel,
+                (x_sel.accelerance if x_sel else None),
+                (y_sel.accelerance if y_sel else None),
+                y_label="Accelerance ((m/s²)/N)",
+                title="Acceleration/Force FRF",
+                avg_on=avg_on,
+                x_all=[m.accelerance for m in (self._x_measurements or [])],
+                y_all=[m.accelerance for m in (self._y_measurements or [])],
+            )
+            return
 
     def set_filtering_cfg(self, cfg: Dict[str, Any]) -> None:
         self._filtering_cfg = dict(cfg or {})
@@ -882,8 +1165,8 @@ class FrfResultsPage(QWidget):
             base["simulation"] = self._model.simulation or {}
         else:
             # directional file paths
-            base["file_paths_x"] = [self._model.file_path_x] if self._model.file_path_x else []
-            base["file_paths_y"] = [self._model.file_path_y] if self._model.file_path_y else []
+            base["file_paths_x"] = list(self._model.file_paths_x or [])
+            base["file_paths_y"] = list(self._model.file_paths_y or [])
         return base
 
     def _run(self) -> None:
@@ -893,9 +1176,20 @@ class FrfResultsPage(QWidget):
             sens = load_data.load_sensitivities(repo_root / "config" / "sensitivities.json")
             directional = load_data.load_directional_data(exp_cfg, sens)
 
-            # Compute x and y FRFs if available; then plot combined where possible.
-            x_res, x_proc = self._compute_directional(directional.get("x"), direction="x")
-            y_res, y_proc = self._compute_directional(directional.get("y"), direction="y")
+            self._x_measurements = self._compute_measurement_list(directional.get("x"), direction="x")
+            self._y_measurements = self._compute_measurement_list(directional.get("y"), direction="y")
+
+            # Default selection: first measurement per direction (if any).
+            self._sel_x_idx = 0
+            self._sel_y_idx = 0
+
+            x_sel = self._x_measurements[self._sel_x_idx] if self._x_measurements else None
+            y_sel = self._y_measurements[self._sel_y_idx] if self._y_measurements else None
+
+            x_res = ((x_sel.compliance, x_sel.accelerance) if x_sel else None)
+            y_res = ((y_sel.compliance, y_sel.accelerance) if y_sel else None)
+            x_proc = (x_sel.proc if x_sel else None)
+            y_proc = (y_sel.proc if y_sel else None)
 
             self._last_x = (
                 _DirectionalFrfResult(direction="x", compliance=x_res[0], accelerance=x_res[1]) if x_res else None
@@ -906,54 +1200,57 @@ class FrfResultsPage(QWidget):
             self._last_proc_x = x_proc
             self._last_proc_y = y_proc
 
-            self._last_raw_x = dict(directional.get("x", {}).get("channels", {}) or {}) if directional.get("x") else None
-            self._last_raw_y = dict(directional.get("y", {}).get("channels", {}) or {}) if directional.get("y") else None
+            self._last_raw_x = dict(x_sel.raw_channels or {}) if x_sel and x_sel.raw_channels is not None else None
+            self._last_raw_y = dict(y_sel.raw_channels or {}) if y_sel and y_sel.raw_channels is not None else None
 
             self._last_run_meta = {
                 "analysis_type": "frf",
                 "data_source": self._model.data_source,
-                "file_path_x": self._model.file_path_x,
-                "file_path_y": self._model.file_path_y,
+                "file_paths_x": list(self._model.file_paths_x or []),
+                "file_paths_y": list(self._model.file_paths_y or []),
                 "simulation": dict(self._model.simulation or {}),
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             }
 
-            self._plot_raw_mosaic(self._tab_raw_mosaic, x_channels=self._last_raw_x, y_channels=self._last_raw_y)
-            self._refresh_time_steps_controls()
-            self._plot_time_processing_steps(
-                self._tab_time_steps,
-                x_proc=self._last_proc_x,
-                y_proc=self._last_proc_y,
-                mode=self._time_steps_mode,
-            )
-            self._plot_fft_magnitude(self._tab_fft_mag, x_proc=self._last_proc_x, y_proc=self._last_proc_y)
-            self._plot_coherence(self._tab_coherence, x_proc=self._last_proc_x, y_proc=self._last_proc_y)
-            self._plot_force_psd(self._tab_force_psd, x_proc=self._last_proc_x, y_proc=self._last_proc_y)
-            self._plot_real_frf(self._tab_real_frf, x_res=x_res, y_res=y_res)
-
-            self._plot_bode(
-                self._tab_bode_disp,
-                x_res[0] if x_res else None,
-                y_res[0] if y_res else None,
-                y_label="Compliance (m/N)",
-                title="Displacement/Force FRF",
-            )
-            self._plot_bode(
-                self._tab_bode_accel,
-                x_res[1] if x_res else None,
-                y_res[1] if y_res else None,
-                y_label="Accelerance ((m/s²)/N)",
-                title="Acceleration/Force FRF",
-            )
+            self._populate_measurement_dropdowns()
+            for tid in ["raw_mosaic", "time_steps", "fft_mag", "coherence", "force_psd", "real_frf", "bode_disp", "bode_accel"]:
+                self._redraw_tab(tid)
         except Exception as e:
             QMessageBox.critical(self, "FRF run failed", str(e))
+
+    def _compute_measurement_list(self, items: object, *, direction: str) -> List[_DirectionalMeasurement]:
+        if not isinstance(items, list):
+            return []
+        out: List[_DirectionalMeasurement] = []
+        for d in items:
+            if not isinstance(d, dict):
+                continue
+            res, proc = self._compute_directional(d, direction=direction)
+            if res is None or proc is None:
+                continue
+            raw_channels = None
+            try:
+                raw_channels = dict(d.get("channels", {}) or {})
+            except Exception:
+                raw_channels = None
+            out.append(
+                _DirectionalMeasurement(
+                    direction=direction,
+                    filepath=d.get("filepath"),
+                    raw_channels=raw_channels,
+                    proc=proc,
+                    compliance=res[0],
+                    accelerance=res[1],
+                )
+            )
+        return out
 
     def _refresh_time_steps_controls(self) -> None:
         """
         Enable only the dropdown modes that have data available.
         """
-        has_x = self._last_proc_x is not None
-        has_y = self._last_proc_y is not None
+        has_x = bool(self._x_measurements)
+        has_y = bool(self._y_measurements)
 
         def set_enabled(user_data: str, enabled: bool) -> None:
             for i in range(self._time_steps_mode_combo.count()):
@@ -991,12 +1288,7 @@ class FrfResultsPage(QWidget):
         if not isinstance(mode, str) or not mode:
             return
         self._time_steps_mode = mode
-        self._plot_time_processing_steps(
-            self._tab_time_steps,
-            x_proc=self._last_proc_x,
-            y_proc=self._last_proc_y,
-            mode=self._time_steps_mode,
-        )
+        self._redraw_tab("time_steps")
 
     def export_results(self, analysis_folder: Path) -> dict:
         """
@@ -1411,6 +1703,7 @@ class FrfResultsPage(QWidget):
         *,
         x_proc: Optional[_DirectionalProcessing],
         y_proc: Optional[_DirectionalProcessing],
+        avg_on: bool = False,
     ) -> None:
         fig = widget.figure
         fig.clear()
@@ -1434,6 +1727,30 @@ class FrfResultsPage(QWidget):
         if y_proc is not None:
             add(y_proc, "Y:")
 
+        if avg_on:
+            # Average across all loaded measurements (complex FFT bins first, then magnitude).
+            def add_avg(direction: str, procs: List[_DirectionalProcessing], prefix: str) -> None:
+                if not procs:
+                    return
+                # Collect common step names present in all procs.
+                names_u = set(procs[0].fft_u_complex.keys())
+                names_r = set(procs[0].fft_resp_complex.keys())
+                for p in procs[1:]:
+                    names_u &= set(p.fft_u_complex.keys())
+                    names_r &= set(p.fft_resp_complex.keys())
+                f0 = procs[0].fft_f_hz
+                for nm in sorted(names_u):
+                    stack = np.stack([p.fft_u_complex[nm] for p in procs], axis=0)
+                    avg = np.mean(stack, axis=0)
+                    ax.plot(f0[1:], np.abs(avg)[1:], color="black", linewidth=2.2, alpha=0.9, label=f"{prefix}avg u:{nm}")
+                for nm in sorted(names_r):
+                    stack = np.stack([p.fft_resp_complex[nm] for p in procs], axis=0)
+                    avg = np.mean(stack, axis=0)
+                    ax.plot(f0[1:], np.abs(avg)[1:], color="black", linewidth=2.2, alpha=0.9, label=f"{prefix}avg resp:{nm}")
+
+            add_avg("x", [m.proc for m in (getattr(self, "_x_measurements", []) or [])], "X:")
+            add_avg("y", [m.proc for m in (getattr(self, "_y_measurements", []) or [])], "Y:")
+
         ax.legend(loc="best", fontsize=8)
         self._enable_legend_toggles(fig)
         widget.redraw()
@@ -1444,6 +1761,7 @@ class FrfResultsPage(QWidget):
         *,
         x_proc: Optional[_DirectionalProcessing],
         y_proc: Optional[_DirectionalProcessing],
+        avg_on: bool = False,
     ) -> None:
         fig = widget.figure
         fig.clear()
@@ -1461,6 +1779,22 @@ class FrfResultsPage(QWidget):
         if y_proc is not None:
             ax.plot(y_proc.f_hz[1:], y_proc.coherence_uy[1:], linewidth=1.6, label="Y")
 
+        if avg_on:
+            def add_avg(procs: List[_DirectionalProcessing], label: str) -> None:
+                if not procs:
+                    return
+                f0 = procs[0].f_hz
+                # Average spectra terms on the common grid.
+                Puu = np.mean(np.stack([p.psd_u for p in procs], axis=0), axis=0)
+                Prr = np.mean(np.stack([p.psd_r for p in procs], axis=0), axis=0)
+                Pur = np.mean(np.stack([p.csd_ur for p in procs], axis=0), axis=0)
+                coh = (np.abs(Pur) ** 2) / ((Puu * Prr) + 1e-30)
+                coh = np.clip(coh, 0.0, 1.0)
+                ax.plot(f0[1:], coh[1:], color="black", linewidth=2.4, alpha=0.9, label=f"{label} avg")
+
+            add_avg([m.proc for m in (getattr(self, "_x_measurements", []) or [])], "X")
+            add_avg([m.proc for m in (getattr(self, "_y_measurements", []) or [])], "Y")
+
         ax.legend(loc="best")
         widget.redraw()
 
@@ -1470,6 +1804,7 @@ class FrfResultsPage(QWidget):
         *,
         x_proc: Optional[_DirectionalProcessing],
         y_proc: Optional[_DirectionalProcessing],
+        avg_on: bool = False,
     ) -> None:
         fig = widget.figure
         fig.clear()
@@ -1486,6 +1821,17 @@ class FrfResultsPage(QWidget):
         if y_proc is not None:
             ax.plot(y_proc.f_hz[1:], y_proc.psd_u[1:], linewidth=1.6, label="Y")
 
+        if avg_on:
+            def add_avg(procs: List[_DirectionalProcessing], label: str) -> None:
+                if not procs:
+                    return
+                f0 = procs[0].f_hz
+                Puu = np.mean(np.stack([p.psd_u for p in procs], axis=0), axis=0)
+                ax.plot(f0[1:], Puu[1:], color="black", linewidth=2.4, alpha=0.9, label=f"{label} avg")
+
+            add_avg([m.proc for m in (getattr(self, "_x_measurements", []) or [])], "X")
+            add_avg([m.proc for m in (getattr(self, "_y_measurements", []) or [])], "Y")
+
         ax.legend(loc="best")
         widget.redraw()
 
@@ -1495,6 +1841,7 @@ class FrfResultsPage(QWidget):
         *,
         x_res: Optional[Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]],
         y_res: Optional[Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]],
+        avg_on: bool = False,
     ) -> None:
         fig = widget.figure
         fig.clear()
@@ -1523,6 +1870,28 @@ class FrfResultsPage(QWidget):
             add(ax1, y_res[0], "Y")
             add(ax2, y_res[1], "Y")
 
+        if avg_on:
+            def avg_frf(items: List[Tuple[np.ndarray, np.ndarray]]) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+                if not items:
+                    return None
+                f0 = np.asarray(items[0][0], dtype=float)
+                Hs = [np.asarray(it[1], dtype=complex) for it in items]
+                Havg = np.mean(np.stack(Hs, axis=0), axis=0)
+                return f0, Havg
+
+            x_comp = avg_frf([m.compliance for m in (getattr(self, "_x_measurements", []) or [])])
+            x_acc = avg_frf([m.accelerance for m in (getattr(self, "_x_measurements", []) or [])])
+            y_comp = avg_frf([m.compliance for m in (getattr(self, "_y_measurements", []) or [])])
+            y_acc = avg_frf([m.accelerance for m in (getattr(self, "_y_measurements", []) or [])])
+            if x_comp is not None:
+                add(ax1, x_comp, "X avg")
+            if x_acc is not None:
+                add(ax2, x_acc, "X avg")
+            if y_comp is not None:
+                add(ax1, y_comp, "Y avg")
+            if y_acc is not None:
+                add(ax2, y_acc, "Y avg")
+
         ax1.legend(loc="best")
         ax2.legend(loc="best")
         widget.redraw()
@@ -1534,6 +1903,9 @@ class FrfResultsPage(QWidget):
         y: Optional[Tuple[np.ndarray, np.ndarray]],
         y_label: str,
         title: str,
+        avg_on: bool = False,
+        x_all: Optional[List[Tuple[np.ndarray, np.ndarray]]] = None,
+        y_all: Optional[List[Tuple[np.ndarray, np.ndarray]]] = None,
     ) -> None:
         fig = widget.figure
         fig.clear()
@@ -1556,6 +1928,17 @@ class FrfResultsPage(QWidget):
             add_trace(x, "X")
         if y is not None:
             add_trace(y, "Y")
+
+        if avg_on:
+            def add_avg(items: Optional[List[Tuple[np.ndarray, np.ndarray]]], label: str) -> None:
+                if not items:
+                    return
+                f0 = np.asarray(items[0][0], dtype=float)
+                Havg = np.mean(np.stack([np.asarray(it[1], dtype=complex) for it in items], axis=0), axis=0)
+                add_trace((f0, Havg), f"{label} avg")
+
+            add_avg(x_all, "X")
+            add_avg(y_all, "Y")
 
         ax_mag.set_title(title)
         ax_mag.set_ylabel(y_label)
@@ -1686,8 +2069,8 @@ class FrfResultsPage(QWidget):
         fft_n = len(time)
         fft_f = np.fft.rfftfreq(fft_n, d=dt)
 
-        def _mag(x: np.ndarray) -> np.ndarray:
-            return np.abs(np.fft.rfft(np.asarray(x, dtype=float), n=fft_n))
+        def _fft(x: np.ndarray) -> np.ndarray:
+            return np.fft.rfft(np.asarray(x, dtype=float), n=fft_n)
 
         # Always include raw, bias_corrected, windowed, and last filtered if present
         pick_names = ["raw", "bias_corrected", "windowed"]
@@ -1699,13 +2082,19 @@ class FrfResultsPage(QWidget):
 
         fft_u_mag: Dict[str, np.ndarray] = {}
         fft_r_mag: Dict[str, np.ndarray] = {}
+        fft_u_complex: Dict[str, np.ndarray] = {}
+        fft_r_complex: Dict[str, np.ndarray] = {}
         u_by_name = {s.name: s.y for s in u_steps}
         r_by_name = {s.name: s.y for s in r_steps}
         for nm in pick_names:
             if nm in u_by_name and nm not in fft_u_mag:
-                fft_u_mag[nm] = _mag(u_by_name[nm])
+                X = _fft(u_by_name[nm])
+                fft_u_complex[nm] = X
+                fft_u_mag[nm] = np.abs(X)
             if nm in r_by_name and nm not in fft_r_mag:
-                fft_r_mag[nm] = _mag(r_by_name[nm])
+                Y = _fft(r_by_name[nm])
+                fft_r_complex[nm] = Y
+                fft_r_mag[nm] = np.abs(Y)
 
         return _DirectionalProcessing(
             direction=direction,
@@ -1717,9 +2106,13 @@ class FrfResultsPage(QWidget):
             f_hz=np.asarray(f_welch, dtype=float),
             psd_u=np.asarray(Puu, dtype=float),
             coherence_uy=np.asarray(coh, dtype=float),
+            csd_ur=np.asarray(Pur, dtype=complex),
+            psd_r=np.asarray(Prr, dtype=float),
             fft_f_hz=np.asarray(fft_f, dtype=float),
             fft_u_mag=fft_u_mag,
             fft_resp_mag=fft_r_mag,
+            fft_u_complex=fft_u_complex,
+            fft_resp_complex=fft_r_complex,
         )
 
 
