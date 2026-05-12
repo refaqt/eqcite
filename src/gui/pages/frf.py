@@ -50,6 +50,25 @@ def _required_wiener_mysize(filt_params: Dict[str, Any]) -> int:
     return m
 
 
+def _strip_savgol_from_filtering_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove obsolete Savitzky–Golay chain steps and params from saved filtering dicts."""
+    out = dict(cfg or {})
+    for key in ("u_chain", "resp_chain"):
+        ch = out.get(key)
+        if isinstance(ch, list):
+            out[key] = [
+                c
+                for c in ch
+                if isinstance(c, dict) and str(c.get("name") or "") != "savgol"
+            ]
+    p = out.get("params")
+    if isinstance(p, dict) and "savgol" in p:
+        p = dict(p)
+        p.pop("savgol", None)
+        out["params"] = p
+    return out
+
+
 @dataclass
 class FrfInputModel:
     data_source: str = "file"  # "file" | "simulation"
@@ -605,7 +624,7 @@ class FrfFilteringPage(QWidget):
         filtering_header.setStyleSheet("font-weight: 600; font-style: italic;")
         layout.addWidget(filtering_header)
 
-        entries = [("wiener", "Wiener"), ("savgol", "Savitzky–Golay")]
+        entries = [("wiener", "Wiener")]
         chain_split = QSplitter(Qt.Orientation.Horizontal)
         self._u_chain = _ChainList("Force (u) filter chain", entries)
         self._resp_chain = _ChainList("Response filter chain", entries)
@@ -630,11 +649,6 @@ class FrfFilteringPage(QWidget):
 
         self._wiener_mysize = QLineEdit("1000")
         filt_form.addRow("Wiener local window / mysize (samples)", self._wiener_mysize)
-
-        self._savgol_wl = QLineEdit("10")
-        self._savgol_po = QLineEdit("2")
-        filt_form.addRow("SavGol window_length", self._savgol_wl)
-        filt_form.addRow("SavGol polyorder", self._savgol_po)
 
         layout.addWidget(filt_params)
 
@@ -716,9 +730,9 @@ class FrfFilteringPage(QWidget):
         scroll.setWidget(content)
         outer.addWidget(scroll, 1)
 
-        # Default order: wiener then savgol (enabled)
-        self._u_chain.set_chain([{"name": "wiener", "enabled": True}, {"name": "savgol", "enabled": True}])
-        self._resp_chain.set_chain([{"name": "wiener", "enabled": True}, {"name": "savgol", "enabled": True}])
+        # Default: Wiener only (enabled)
+        self._u_chain.set_chain([{"name": "wiener", "enabled": True}])
+        self._resp_chain.set_chain([{"name": "wiener", "enabled": True}])
         self._u_chain.set_show_all_items()
         self._resp_chain.set_show_all_items()
         self._refresh_preview()
@@ -726,8 +740,6 @@ class FrfFilteringPage(QWidget):
         for w in [
             self._bias_window_size,
             self._wiener_mysize,
-            self._savgol_wl,
-            self._savgol_po,
             self._win_hann_width,
             self._win_pre,
             self._win_post,
@@ -843,7 +855,6 @@ class FrfFilteringPage(QWidget):
             "resp_chain": self._resp_chain.get_chain(),
             "params": {
                 "wiener": {"mysize": i(self._wiener_mysize.text())},
-                "savgol": {"window_length": i(self._savgol_wl.text()), "polyorder": i(self._savgol_po.text())},
             },
             "windowing": {
                 "input_window_type": str(self._win_in_type.currentData() or "hann"),
@@ -862,7 +873,7 @@ class FrfFilteringPage(QWidget):
         }
 
     def apply_filtering_cfg(self, cfg: Dict[str, Any]) -> None:
-        cfg = dict(cfg or {})
+        cfg = _strip_savgol_from_filtering_cfg(dict(cfg or {}))
         if "bias_window_size" in cfg:
             self._bias_window_size.setText(str(int(cfg["bias_window_size"])))
         # IO selection
@@ -896,12 +907,6 @@ class FrfFilteringPage(QWidget):
             w = params.get("wiener") or {}
             if isinstance(w, dict) and "mysize" in w:
                 self._wiener_mysize.setText(str(w.get("mysize") or ""))
-            s = params.get("savgol") or {}
-            if isinstance(s, dict):
-                if "window_length" in s:
-                    self._savgol_wl.setText(str(s.get("window_length") or ""))
-                if "polyorder" in s:
-                    self._savgol_po.setText(str(s.get("polyorder") or ""))
 
         win = cfg.get("windowing") or {}
         if isinstance(win, dict):
@@ -1202,7 +1207,7 @@ class FrfResultsPage(QWidget):
             return
 
     def set_filtering_cfg(self, cfg: Dict[str, Any]) -> None:
-        self._filtering_cfg = dict(cfg or {})
+        self._filtering_cfg = _strip_savgol_from_filtering_cfg(dict(cfg or {}))
 
     def _build_experiment_cfg(self) -> Dict[str, Any]:
         # Start from defaults and override from model.
@@ -1714,7 +1719,7 @@ class FrfResultsPage(QWidget):
         ax.set_xlabel("Time (s)")
 
         def add_steps(ax, t: np.ndarray, steps: List[_SignalStep], prefix: str) -> None:
-            default_visible = {"raw", "bias_corrected", "window", "windowed", "wiener", "savgol"}
+            default_visible = {"raw", "bias_corrected", "window", "windowed", "wiener"}
             for s in steps:
                 line = ax.plot(t, s.y, linewidth=1.0, label=f"{prefix}{s.name}")[0]
                 line.set_visible(s.name in default_visible)
@@ -2062,12 +2067,6 @@ class FrfResultsPage(QWidget):
                     noise_pow = signal_processing.calculate_noise_power_from_window(x_cur, noise_idx, noise_actual)
                     x_cur = signal_processing.apply_wiener_filter_legacy(x_cur, noise_pow, mysize)
                     steps.append(_SignalStep("wiener", x_cur))
-                elif nm == "savgol":
-                    p = filt_params.get("savgol") or {}
-                    wl = int((p.get("window_length") or 0) or 0)
-                    po = int((p.get("polyorder") or 0) or 0)
-                    x_cur = signal_processing.apply_savgol_filter(x_cur, wl, po)
-                    steps.append(_SignalStep("savgol", x_cur))
             return x_cur, steps
 
         u_filtered, u_f_steps = _apply_chain(u_bias, u_chain, is_u=True)
@@ -2224,11 +2223,6 @@ def apply_frf_filtering_and_windowing(
                 noise_actual = u_bias_actual if is_u else r_bias_actual
                 noise_pow = signal_processing.calculate_noise_power_from_window(x_cur, noise_idx, noise_actual)
                 x_cur = signal_processing.apply_wiener_filter_legacy(x_cur, noise_pow, mysize)
-            elif nm == "savgol":
-                p = filt_params.get("savgol") or {}
-                wl = int((p.get("window_length") or 0) or 0)
-                po = int((p.get("polyorder") or 0) or 0)
-                x_cur = signal_processing.apply_savgol_filter(x_cur, wl, po)
         return x_cur
 
     u_filt = _apply_chain(u_bias, u_chain, is_u=True)

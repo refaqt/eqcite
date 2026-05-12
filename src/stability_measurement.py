@@ -481,22 +481,6 @@ def process_stability_measurement(filepath, window_duration=DEFAULT_WINDOW_DURAT
             A6 = signal_processing.apply_wiener_filter_legacy(A6, noise_A6, wiener_mysize)
             A7 = signal_processing.apply_wiener_filter_legacy(A7, noise_A7, wiener_mysize)
         
-        # Apply Savitzky-Golay filter if enabled
-        use_savgol = params.get('savgol_filter', False)
-        if use_savgol:
-            print("Applying Savitzky-Golay filter...")
-            window_length = params.get('savgol_window_length', 10)
-            polyorder = params.get('savgol_polyorder', 3)
-            
-            A0 = signal_processing.apply_savgol_filter(A0, window_length, polyorder)
-            A1 = signal_processing.apply_savgol_filter(A1, window_length, polyorder)
-            A2 = signal_processing.apply_savgol_filter(A2, window_length, polyorder)
-            A3 = signal_processing.apply_savgol_filter(A3, window_length, polyorder)
-            A4 = signal_processing.apply_savgol_filter(A4, window_length, polyorder)
-            A5 = signal_processing.apply_savgol_filter(A5, window_length, polyorder)
-            A6 = signal_processing.apply_savgol_filter(A6, window_length, polyorder)
-            A7 = signal_processing.apply_savgol_filter(A7, window_length, polyorder)
-        
         # Store filtered signals for comparison plots
         filtered_signals = {
             'A0': A0, 'A1': A1, 'A2': A2, 'A3': A3,

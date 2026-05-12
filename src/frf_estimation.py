@@ -69,11 +69,6 @@ def get_system_parameters():
     # Wiener filter parameters
     wiener_filter = True  # Toggle to enable/disable Wiener filter for channels A0-A7
     
-    # Savitzky-Golay filter parameters
-    savgol_filter = True  # Toggle to enable/disable Savitzky-Golay filter for channels A0-A7
-    savgol_window_length = 10  # Window length for Savitzky-Golay filter (must be odd)
-    savgol_polyorder = 2  # Polynomial order for Savitzky-Golay filter
-    
     # Low-pass filter parameters (for analysis visualization only)
     lowpass_filter = False  # Toggle to enable/disable low-pass filter for channels A0-A7
     lowpass_bandwidth_hz = 100.0  # Low-pass filter bandwidth (Hz) for analysis plots
@@ -120,9 +115,6 @@ def get_system_parameters():
         'bias_window_size': bias_window_size,
         'wiener_mysize': wiener_mysize,
         'wiener_filter': wiener_filter,
-        'savgol_filter': savgol_filter,
-        'savgol_window_length': savgol_window_length,
-        'savgol_polyorder': savgol_polyorder,
         'lowpass_filter': lowpass_filter,
         'lowpass_bandwidth_hz': lowpass_bandwidth_hz,
         'input_window_type': input_window_type,
@@ -493,50 +485,6 @@ def apply_lowpass_filter(data, cutoff_hz, fs):
     
     # Apply zero-phase filtering using filtfilt
     filtered_data = signal.filtfilt(b, a, data)
-    
-    return filtered_data
-
-def apply_savgol_filter(data, window_length, polyorder):
-    """
-    Apply Savitzky-Golay filter to the data.
-    
-    Parameters:
-    -----------
-    data : array_like
-        Input signal array
-    window_length : int
-        Window length for Savitzky-Golay filter (must be odd)
-    polyorder : int
-        Polynomial order for Savitzky-Golay filter
-        
-    Returns:
-    --------
-    array_like : Savitzky-Golay filtered signal
-    """
-    data = np.asarray(data)
-    signal_length = len(data)
-    
-    # Handle case where signal is shorter than window_length
-    if signal_length < window_length:
-        print(f"Warning: Signal length ({signal_length}) is less than window length ({window_length}). "
-              f"Returning original signal.")
-        return data
-    
-    # Ensure window_length is odd (required by savgol_filter)
-    if window_length % 2 == 0:
-        window_length = window_length - 1
-        if window_length < 3:
-            print(f"Warning: Adjusted window length ({window_length}) is too small. "
-                  f"Returning original signal.")
-            return data
-    
-    # Ensure polyorder is less than window_length
-    if polyorder >= window_length:
-        polyorder = window_length - 1
-        print(f"Warning: Polynomial order adjusted to {polyorder} (window_length - 1)")
-    
-    # Apply Savitzky-Golay filter
-    filtered_data = signal.savgol_filter(data, window_length, polyorder)
     
     return filtered_data
 
@@ -2017,51 +1965,6 @@ def plot_wiener_filtered_signals(time, bias_corrected_signals, wiener_filtered_s
     plt.tight_layout()
     # Do not call plt.show() here; show all figures once at the end.
 
-def plot_savgol_filtered_signals(time, raw_signals, savgol_filtered_signals, window_length, polyorder, show_plot=True):
-    """
-    Plot comparison of raw signals (after Wiener filter) and Savitzky-Golay filtered signals for A0-A7.
-    Creates a single figure with 2 rows and 4 columns (8 subplots total).
-    
-    Parameters:
-    -----------
-    time : array_like
-        Time array in seconds
-    raw_signals : dict
-        Dictionary with keys 'A0' through 'A7' containing signals after Wiener filter (before Savitzky-Golay)
-    savgol_filtered_signals : dict
-        Dictionary with keys 'A0' through 'A7' containing Savitzky-Golay filtered signals
-    window_length : int
-        Window length used for Savitzky-Golay filter (for display in labels)
-    polyorder : int
-        Polynomial order used for Savitzky-Golay filter (for display in labels)
-    show_plot : bool
-        Whether to display the plots
-    """
-    if not show_plot:
-        return
-    
-    signal_names = ['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7']
-    
-    # Create figure with 2 rows and 4 columns
-    fig, axes = plt.subplots(2, 4, figsize=(16, 8))
-    axes = axes.flatten()  # Flatten to 1D array for easy indexing
-    
-    for idx, name in enumerate(signal_names):
-        ax = axes[idx]
-        
-        ax.plot(time, raw_signals[name], 'r-', linewidth=1, alpha=0.7, label='Raw (after Wiener filter)')
-        ax.plot(time, savgol_filtered_signals[name], 'b-', linewidth=1, alpha=0.7, 
-                label=f'Savitzky-Golay (w={window_length}, p={polyorder})')
-        
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Voltage (V)')
-        ax.set_title(f'Savitzky-Golay Filtered Signal Comparison - {name}')
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=8)
-    
-    plt.tight_layout()
-    # Do not call plt.show() here; show all figures once at the end.
-
 def plot_time_domain_signals(time, u, x, y, show_plot=True, windows=None, tool_accel=None, tool_label=None, z_accel=None):
     """
     Plot time-domain signals u, x, y in a single figure with synchronized x-axes.
@@ -3177,21 +3080,6 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
                 A6 = apply_wiener_filter(A6, noise_A6, wiener_mysize)
                 A7 = apply_wiener_filter(A7, noise_A7, wiener_mysize)
             
-            # Apply Savitzky-Golay filter to A0-A7 if enabled
-            use_savgol = params.get('savgol_filter', False)
-            if use_savgol:
-                window_length = params.get('savgol_window_length', 10)
-                polyorder = params.get('savgol_polyorder', 3)
-                
-                A0 = apply_savgol_filter(A0, window_length, polyorder)
-                A1 = apply_savgol_filter(A1, window_length, polyorder)
-                A2 = apply_savgol_filter(A2, window_length, polyorder)
-                A3 = apply_savgol_filter(A3, window_length, polyorder)
-                A4 = apply_savgol_filter(A4, window_length, polyorder)
-                A5 = apply_savgol_filter(A5, window_length, polyorder)
-                A6 = apply_savgol_filter(A6, window_length, polyorder)
-                A7 = apply_savgol_filter(A7, window_length, polyorder)
-            
             # Calculate derived signals with measurement case (using filtered A0-A7)
             signals = calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measurement_case)
             
@@ -3710,35 +3598,6 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
                 'A4': A4, 'A5': A5, 'A6': A6, 'A7': A7
             }
 
-        # Store signals before Savitzky-Golay filter (these are the "raw" signals for comparison)
-        raw_signals_before_savgol = {
-            'A0': A0.copy(), 'A1': A1.copy(), 'A2': A2.copy(), 'A3': A3.copy(),
-            'A4': A4.copy(), 'A5': A5.copy(), 'A6': A6.copy(), 'A7': A7.copy()
-        }
-        
-        # Apply Savitzky-Golay filter to A0-A7 if enabled
-        use_savgol = params.get('savgol_filter', False)
-        if use_savgol:
-            window_length = params.get('savgol_window_length', 10)
-            polyorder = params.get('savgol_polyorder', 3)
-            
-            A0 = apply_savgol_filter(A0, window_length, polyorder)
-            A1 = apply_savgol_filter(A1, window_length, polyorder)
-            A2 = apply_savgol_filter(A2, window_length, polyorder)
-            A3 = apply_savgol_filter(A3, window_length, polyorder)
-            A4 = apply_savgol_filter(A4, window_length, polyorder)
-            A5 = apply_savgol_filter(A5, window_length, polyorder)
-            A6 = apply_savgol_filter(A6, window_length, polyorder)
-            A7 = apply_savgol_filter(A7, window_length, polyorder)
-            
-            # Store Savitzky-Golay filtered signals for plotting
-            savgol_filtered_signals = {
-                'A0': A0, 'A1': A1, 'A2': A2, 'A3': A3,
-                'A4': A4, 'A5': A5, 'A6': A6, 'A7': A7
-            }
-        else:
-            savgol_filtered_signals = None
-
         # Store filtered signals (after all filters) for comparison plots
         filtered_signals = {
             'A0': A0, 'A1': A1, 'A2': A2, 'A3': A3,
@@ -3790,13 +3649,6 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
                 'A7': corrected_signals['A7']
             }
             plot_wiener_filtered_signals(time, corrected_signals_A0_A7, wiener_filtered_signals, show_plot)
-        
-        # Show Savitzky-Golay filtered signals plot (if Savitzky-Golay filter was applied, only if show_all_figures is True)
-        if show_all_figures and use_savgol and savgol_filtered_signals is not None:
-            window_length = params.get('savgol_window_length', 10)
-            polyorder = params.get('savgol_polyorder', 3)
-            plot_savgol_filtered_signals(time, raw_signals_before_savgol, savgol_filtered_signals, 
-                                        window_length, polyorder, show_plot)
         
         # Calculate derived signals with measurement case (using filtered A0-A7)
         signals = calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measurement_case)

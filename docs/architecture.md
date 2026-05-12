@@ -46,7 +46,7 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
   - `src/gui/state.py`: `AnalysisState` (in-memory session state)
   - `src/gui/persistence.py`: save/load `analysis.json` + app settings (`config/app_settings.json`)
   - `src/gui/plot_widgets.py`: Matplotlib embedding for result tabs
-- **FRF filtering / analysis** (`src/gui/pages/frf.py` → `FrfFilteringPage`): **`bias_window_size`** (samples) configures sliding min-variance bias removal and the noise-variance segment; **`filtering.params.wiener.mysize`** configures SciPy’s local Wiener window only. Both are persisted in the experiment snapshot (`experiment_cfg`), with `bias_window_size` also duplicated at the top level of `analysis.json` for readability.
+- **FRF filtering / analysis** (`src/gui/pages/frf.py` → `FrfFilteringPage`): **`bias_window_size`** (samples) configures sliding min-variance bias removal and the noise-variance segment; per-axis **filter chains** apply **optional Wiener** to force (`u`) and response before windowing; **`filtering.params.wiener.mysize`** configures SciPy’s local Wiener window only. Both are persisted in the experiment snapshot (`experiment_cfg`), with `bias_window_size` also duplicated at the top level of `analysis.json` for readability.
 - **FRF results tabs** (`src/gui/pages/frf.py`):
   - `Raw signals (mosaic)`: plots raw channels A0..A7 (per direction when available)
   - `Time signals (processing steps)`: plot with per-direction measurement selection + Force/Response selector, and **clickable legend toggles** for raw/bias/window/windowed/filtered traces
@@ -71,7 +71,7 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 
 - In the FRF GUI (`src/gui/pages/frf.py`), the sidebar page **Analysis settings** contains:
   - **input/output selection**: choose which normalized signal families are used as FRF input and output (Force `F_x/F_y`, Tool `x_tool/y_tool`, or Spindle `x_spindle/y_spindle`).
-  - **Filtering**: filter chains + parameters + windowing configuration (applied before FRF estimation).
+  - **Filtering**: bias removal, then optional **Wiener** on force and/or response (independent chains), then windowing (applied before FRF estimation).
   - **Estimation**: FRF estimator selection (`H1`, `H2`, `Hv`, default `Hv`), passed into `src/frf_estimation.py::compute_frf_from_signals()` via `params['estimator_type']`.
 
 ## Embedded / firmware

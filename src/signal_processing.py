@@ -277,31 +277,6 @@ def apply_wiener_filter_legacy(
     return signal.wiener(data, mysize=mysize, noise=float(noise_power))
 
 
-def apply_savgol_filter(
-    signal_data: np.ndarray,
-    window_length: int,
-    polyorder: int,
-) -> np.ndarray:
-    """
-    Apply a Savitzky–Golay filter to a signal.
-    """
-    data = np.asarray(signal_data, dtype=float)
-    if window_length <= 0 or len(data) < window_length:
-        return data
-
-    if window_length % 2 == 0:
-        window_length -= 1
-        if window_length < 3:
-            return data
-
-    if polyorder >= window_length:
-        polyorder = window_length - 1
-        if polyorder < 1:
-            return data
-
-    return signal.savgol_filter(data, window_length, polyorder)
-
-
 def apply_lowpass_filter(
     signal_data: np.ndarray,
     cutoff_hz: float,
