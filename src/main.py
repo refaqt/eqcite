@@ -16,7 +16,7 @@ from typing import Any, Dict
 import numpy as np
 import matplotlib.pyplot as plt
 
-from . import load_data
+from . import experiment_config, load_data
 from . import frf_estimation
 from . import stability_measurement  # type: ignore
 
@@ -34,7 +34,16 @@ def _load_experiment_config(path: Path) -> Dict[str, Any]:
 def run_frf_pipeline(exp_cfg_path: Path, sens_path: Path) -> None:
     """Run FRF estimation for the given experiment configuration."""
     exp_cfg = _load_experiment_config(exp_cfg_path)
-    sens = load_data.load_sensitivities(sens_path)
+    if not experiment_config.uses_new_experiment_schema(exp_cfg) and (
+        exp_cfg.get("channel_mapping") or exp_cfg.get("sensitivity_mapping")
+    ):
+        sens_all = load_data.load_sensitivities(sens_path)
+        exp_cfg = experiment_config.migrate_legacy_experiment_cfg(exp_cfg, sens_all)
+
+    if experiment_config.uses_new_experiment_schema(exp_cfg):
+        sens: Dict[str, float] = {}
+    else:
+        sens = load_data.load_sensitivities(sens_path)
 
     params = frf_estimation.get_system_parameters()
     if isinstance(exp_cfg, dict):
@@ -63,6 +72,14 @@ def run_frf_pipeline(exp_cfg_path: Path, sens_path: Path) -> None:
 
     pairs_x = exp_cfg.get("frf_pairs_x", exp_cfg.get("frf_pairs", []))
     pairs_y = exp_cfg.get("frf_pairs_y", exp_cfg.get("frf_pairs", []))
+    if experiment_config.uses_new_experiment_schema(exp_cfg):
+        io = exp_cfg.get("analysis_io") or {}
+        bx = io.get("x") or {}
+        by = io.get("y") or {}
+        if bx.get("input") and bx.get("output"):
+            pairs_x = [{"input": str(bx["input"]), "output": str(bx["output"])}]
+        if by.get("input") and by.get("output"):
+            pairs_y = [{"input": str(by["input"]), "output": str(by["output"])}]
 
     # The current CLI is configured to create one combined plot from one x-file and one y-file.
     x_plot_result: tuple[str, str, np.ndarray, np.ndarray] | None = None  # (input, output, f, H)
@@ -70,8 +87,13 @@ def run_frf_pipeline(exp_cfg_path: Path, sens_path: Path) -> None:
 
     for csv_path in file_paths_x or [Path("<simulation>")]:
         print(f"\n=== FRF analysis for x file {csv_path} ===")
-        data = directional.get("x")
-        if data is None:
+        if data_source == "simulation":
+            x_list = directional.get("x")
+            if not isinstance(x_list, list) or not x_list:
+                print("No simulation data for x.")
+                continue
+            data = x_list[0]
+        else:
             data = load_data.load_measurement_file_with_config(csv_path, exp_cfg, sens)
 
         time = np.asarray(data["time"])
@@ -101,8 +123,13 @@ def run_frf_pipeline(exp_cfg_path: Path, sens_path: Path) -> None:
 
     for csv_path in file_paths_y or [Path("<simulation>")]:
         print(f"\n=== FRF analysis for y file {csv_path} ===")
-        data = directional.get("y")
-        if data is None:
+        if data_source == "simulation":
+            y_list = directional.get("y")
+            if not isinstance(y_list, list) or not y_list:
+                print("No simulation data for y.")
+                continue
+            data = y_list[0]
+        else:
             data = load_data.load_measurement_file_with_config(csv_path, exp_cfg, sens)
 
         time = np.asarray(data["time"])

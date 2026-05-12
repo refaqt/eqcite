@@ -13,10 +13,14 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 | `src/` | Main Python package: pipelines, signal/FRF logic, stability analysis |
 | `src/main.py` | CLI-style entry: loads JSON experiment config, runs FRF or stability pipeline |
 | `src/frf_estimation.py` | Canonical FRF computation and plotting utilities |
-| `src/load_data.py` | Measurement loading, sensitivities, config-driven column mapping |
+| `src/load_data.py` | CSV/simulation loading: new **experiment schema** builds named variables from catalog + mapping + expressions; legacy path uses `sensitivities.json` + `sensor_model` |
 | `src/stability_measurement.py` | Stability measurement / spectrogram-style analysis on CSV cycles |
 | `src/stability_lobe_diagram.py` | Stability lobe diagram related logic (see module for current scope) |
-| `src/sensor_model.py` | Sensor / model helpers |
+| `src/expression_eval.py` | Restricted AST evaluation for experiment expression variables |
+| `src/experiment_config.py` | Experiment schema helpers: unit normalization, variable kind classification, legacy migration |
+| `src/gui/pages/frf_model.py` | `FrfInputModel` shared between FRF pages |
+| `src/gui/pages/frf_experiment_config.py` | **Experiment configuration** Qt page (Mapping / Sensors / Expressions / Input–Output) |
+| `src/sensor_model.py` | Legacy sensor geometry transforms (used when old channel-mapping pipeline is active) |
 | `src/signal_processing.py` | Shared signal processing |
 | `src/simulate_system.py` | Simulation helpers (importable; driven by config) |
 | `src/smoke_test.py` | Minimal non-pytest smoke checks for core flows |
@@ -28,9 +32,11 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 
 ## Data and configuration flow
 
-1. **Experiment config** (JSON under `config/`, paths referenced by `src/main.py` defaults) sets `analysis_type` (`frf` or `stability_measurement`), `data_source` (`file` or `simulation`), input file lists (when `file`), simulation model params (when `simulation`), and FRF input/output pairs.
-2. **Sensitivities** (`config/sensitivities.json`) scale or map channels when loading measurements.
-3. **Data source**:\n+   - `file`: CSV measurements are loaded through `load_data` using paths from the experiment config.\n+   - `simulation`: `simulate_system` generates time-series, and `load_data` normalizes them into the same signals dict shape.
+1. **Experiment config** (JSON under `config/`, snapshot in `analysis.json`) sets `analysis_type`, `data_source`, file paths or simulation params, and the **FRF experiment schema** when `sensor_catalog` is non-empty: sensor catalog (with `N` vs `m/s²` units), channel mapping rows, optional expressions, per-direction `analysis_io` (force input + acceleration output), and optional `simulation_signal_map` for simulation runs.
+2. **Legacy configs** without `sensor_catalog` still use `channel_mapping` + `sensitivity_mapping` + `config/sensitivities.json` and `sensor_model`-derived `F_x` / `x_tool` style signals inside `load_data`.
+3. **Data source**:
+   - `file`: CSV measurements are loaded through `load_data` using paths from the experiment config.
+   - `simulation`: `simulate_system` generates time-series; `load_data` exposes canonical keys and/or user aliases from `simulation_signal_map`.
 
 ### Simulation parameter semantics
 
@@ -64,13 +70,12 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 - **Persistence**:
   - An analysis is saved as a **folder** containing `analysis.json` plus `results/figures`, `results/tables`, and `results/logs`.
   - When saving from the GUI, FRF runs export their current figures + tables into `results/` so the folder is self-contained.
-  - Global sensitivities are stored in `config/sensitivities.json` and are not duplicated per analysis folder.
-  - Per-user GUI defaults (folders, default FRF sensor configuration, and last-selected input file paths) are stored in `config/app_settings.json`.
+  - Global sensitivities (`config/sensitivities.json`) apply only to the **legacy** loading path; the new experiment schema stores sensitivity on each catalog row.
+  - Per-user GUI defaults (folders, **`default_experiment_config`** for the FRF experiment schema, default filtering, last-selected input file paths) are stored in `config/app_settings.json`.
 
 ### FRF analysis settings
 
-- In the FRF GUI (`src/gui/pages/frf.py`), the sidebar page **Analysis settings** contains:
-  - **input/output selection**: choose which normalized signal families are used as FRF input and output (Force `F_x/F_y`, Tool `x_tool/y_tool`, or Spindle `x_spindle/y_spindle`).
+- In the FRF GUI (`src/gui/pages/frf.py`), the sidebar page **Experiment configuration** defines sensors, mapping, expressions, and **per-direction** analysis I/O (force-only inputs, acceleration-only outputs). The page **Analysis settings** contains:
   - **Filtering**: bias removal, then optional **Wiener** on force and/or response (independent chains), then windowing (applied before FRF estimation).
   - **Estimation**: FRF estimator selection (`H1`, `H2`, `Hv`, default `Hv`), passed into `src/frf_estimation.py::compute_frf_from_signals()` via `params['estimator_type']`.
 

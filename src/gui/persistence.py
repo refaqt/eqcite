@@ -20,6 +20,7 @@ class AppSettings:
     default_channel_mapping: Dict[str, int] = field(default_factory=dict)
     default_sensitivity_mapping: Dict[str, str] = field(default_factory=dict)
     default_sensitivities: Dict[str, float] = field(default_factory=dict)
+    default_experiment_config: Dict[str, Any] = field(default_factory=dict)
     # Last-selected FRF measurement file lists (multi-select).
     # Backward compatible with older settings that stored single paths as strings.
     last_frf_x_files: list[str] = field(default_factory=list)
@@ -35,6 +36,7 @@ class AppSettings:
             "default_channel_mapping": dict(self.default_channel_mapping or {}),
             "default_sensitivity_mapping": dict(self.default_sensitivity_mapping or {}),
             "default_sensitivities": dict(self.default_sensitivities or {}),
+            "default_experiment_config": dict(self.default_experiment_config or {}),
             "last_frf_x_files": list(self.last_frf_x_files or []),
             "last_frf_y_files": list(self.last_frf_y_files or []),
             "last_stability_file": str(self.last_stability_file or ""),
@@ -48,6 +50,7 @@ class AppSettings:
         raw_chan = d.get("default_channel_mapping") or {}
         raw_sens_map = d.get("default_sensitivity_mapping") or {}
         raw_sens = d.get("default_sensitivities") or {}
+        raw_exp = d.get("default_experiment_config") or {}
         # New format (lists)
         last_frf_x_files = d.get("last_frf_x_files")
         last_frf_y_files = d.get("last_frf_y_files")
@@ -103,6 +106,10 @@ class AppSettings:
                 uniq.append(s)
             return uniq
 
+        exp_cfg: Dict[str, Any] = {}
+        if isinstance(raw_exp, dict):
+            exp_cfg = dict(raw_exp)
+
         return AppSettings(
             default_save_dir=Path(p),
             # Backwards-compatible default: if load dir isn't specified yet, start from save dir.
@@ -110,6 +117,7 @@ class AppSettings:
             default_channel_mapping=chan,
             default_sensitivity_mapping=sens_map,
             default_sensitivities=sens,
+            default_experiment_config=exp_cfg,
             last_frf_x_files=_coerce_path_list(last_frf_x_files, last_frf_x_file),
             last_frf_y_files=_coerce_path_list(last_frf_y_files, last_frf_y_file),
             last_stability_file=str(last_stability_file or ""),

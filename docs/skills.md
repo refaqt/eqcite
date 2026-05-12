@@ -8,18 +8,6 @@ Reusable **project-specific** patterns for this codebase. Agents and humans shou
 
 ---
 
-## [Example — replace with a real skill]
-**When to use:** Placeholder until the first real entry is added.
-**Pattern:**
-```text
-# Remove this section when you add the first real skill.
-```
-**Gotchas:** Delete the example block to avoid noise in search.
-**Last used:** —
-
----
-
-## Run the Qt GUI
 **When to use:** You want to configure and run FRF/stability interactively (instead of editing JSONs by hand).
 **Pattern:**
 ```bash
@@ -42,7 +30,7 @@ python -m src.gui.app
     logs/
 ```
 **Gotchas:**
-- Sensitivities are global and auto-saved to `config/sensitivities.json` (not duplicated into each analysis folder).
+- New FRF experiment schema stores per-sensor sensitivity in **`sensor_catalog`** (defaults in `config/app_settings.json` → `default_experiment_config`). Legacy configs still use `config/sensitivities.json`.
 - GUI save exports **FRF** artifacts from the currently computed results:
   - `results/figures/bode_displacement_force.png`
   - `results/figures/bode_acceleration_force.png`
@@ -50,20 +38,19 @@ python -m src.gui.app
   - `results/logs/export_log.json`
 **Last used:** 2026-04-22
 
-## Entry template
-
-```markdown
-## [Skill name]
-**When to use:** [One sentence]
-**Pattern:**
-```[language]
-// minimal example
-```
-**Gotchas:** [Any known edge cases or pitfalls]
-**Last used:** [Date or task reference]
-```
-
 ---
+
+## Default FRF experiment configuration (GUI)
+**When to use:** You add fields to the FRF experiment schema (catalog, mapping, expressions, `analysis_io`) and need them to survive restarts without editing shared templates under `config/`.
+**Pattern:**
+```python
+# persistence.py — AppSettings.default_experiment_config: dict
+
+# frf_experiment_config.py — page emits default_save_requested with full blob
+# main_window.py — _on_save_default_experiment_config merges into AppSettings and save_app_settings()
+```
+**Gotchas:** Legacy installs may still have `default_channel_mapping`; `MainWindow` prefers `default_experiment_config` when non-empty. **Save as default** clears legacy triples once the new blob is written.
+**Last used:** 2026-05-12 (experiment configuration redesign)
 
 ## Simulation config smoke-run
 **When to use:** Quickly verify the FRF pipeline works end-to-end without needing access to measurement CSV paths.
@@ -88,7 +75,7 @@ tmp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 from src.main import run_frf_pipeline
 run_frf_pipeline(tmp, Path("config/sensitivities.json"))
 ```
-**Gotchas:** Welch settings must be valid for short signals; `compute_frf_from_signals()` clamps `nperseg/noverlap` for robustness.
+**Gotchas:** With **`sensor_catalog`** in the experiment JSON, the second argument is ignored (pass any existing path, e.g. `Path("config/sensitivities.json")`). Welch settings must be valid for short signals; `compute_frf_from_signals()` clamps `nperseg/noverlap` for robustness.
 **Last used:** 2026-04-22
 
 ---

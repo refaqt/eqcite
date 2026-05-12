@@ -34,7 +34,7 @@ python -m src.gui.app
 ```
 
 - The GUI supports FRF and stability tabs, plus saving/loading analyses.
-- App-level settings (like default save folder) are stored in `config/app_settings.json`.
+- App-level settings (default save folder, **default FRF experiment configuration**, last-selected file paths) are stored in `config/app_settings.json`.
 
 ## Running the main pipeline
 

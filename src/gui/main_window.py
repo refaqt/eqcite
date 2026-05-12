@@ -71,7 +71,7 @@ class MainWindow(QMainWindow):
         self._frf_root.set_default_load_dir(str(resolve_default_load_dir(self._repo_root, self._app_settings)))
         self._stab_root.set_default_load_dir(str(resolve_default_load_dir(self._repo_root, self._app_settings)))
 
-        self._frf_root.default_sensor_config_save_requested.connect(self._on_save_default_sensor_config)
+        self._frf_root.default_experiment_config_save_requested.connect(self._on_save_default_experiment_config)
         self._frf_root.default_filtering_save_requested.connect(self._on_save_default_frf_filtering)
         self._frf_root.file_paths_changed.connect(self._on_frf_file_paths_changed)
         self._stab_root.file_path_changed.connect(self._on_stability_file_path_changed)
@@ -91,6 +91,12 @@ class MainWindow(QMainWindow):
             self._restoring_settings = False
 
     def _apply_default_sensor_config_if_present(self) -> None:
+        if self._app_settings.default_experiment_config:
+            try:
+                self._frf_root.apply_default_experiment_config(dict(self._app_settings.default_experiment_config or {}))
+            except Exception as e:
+                QMessageBox.critical(self, "Failed to apply default experiment config", str(e))
+            return
         if (
             not self._app_settings.default_channel_mapping
             and not self._app_settings.default_sensitivity_mapping
@@ -114,21 +120,17 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Failed to apply default filtering", str(e))
 
-    def _on_save_default_sensor_config(
-        self,
-        channel_mapping: dict,
-        sensitivity_mapping: dict,
-        sensitivities: dict,
-    ) -> None:
-        self._app_settings.default_channel_mapping = dict(channel_mapping or {})
-        self._app_settings.default_sensitivity_mapping = dict(sensitivity_mapping or {})
-        self._app_settings.default_sensitivities = dict(sensitivities or {})
+    def _on_save_default_experiment_config(self, cfg: dict) -> None:
+        self._app_settings.default_experiment_config = dict(cfg or {})
+        self._app_settings.default_channel_mapping = {}
+        self._app_settings.default_sensitivity_mapping = {}
+        self._app_settings.default_sensitivities = {}
         try:
             save_app_settings(self._repo_root, self._app_settings)
         except Exception as e:
-            QMessageBox.critical(self, "Failed to save default sensor config", str(e))
+            QMessageBox.critical(self, "Failed to save default experiment config", str(e))
             return
-        QMessageBox.information(self, "Defaults saved", "Saved default sensor configuration.")
+        QMessageBox.information(self, "Defaults saved", "Saved default experiment configuration.")
 
     def _on_save_default_frf_filtering(self, filtering_cfg: dict) -> None:
         self._app_settings.default_frf_filtering = dict(filtering_cfg or {})
