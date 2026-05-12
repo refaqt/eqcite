@@ -42,7 +42,7 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 
 - **Entry point**: `python -m src.gui.app`
 - **Core components**:
-  - `src/gui/main_window.py`: top-level shell (tabs + toolbar + title/description fields)
+  - `src/gui/main_window.py`: top-level shell (tabs + toolbar)
   - `src/gui/state.py`: `AnalysisState` (in-memory session state)
   - `src/gui/persistence.py`: save/load `analysis.json` + app settings (`config/app_settings.json`)
   - `src/gui/plot_widgets.py`: Matplotlib embedding for result tabs
