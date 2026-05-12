@@ -20,8 +20,10 @@ class AppSettings:
     default_channel_mapping: Dict[str, int] = field(default_factory=dict)
     default_sensitivity_mapping: Dict[str, str] = field(default_factory=dict)
     default_sensitivities: Dict[str, float] = field(default_factory=dict)
-    last_frf_x_file: str = ""
-    last_frf_y_file: str = ""
+    # Last-selected FRF measurement file lists (multi-select).
+    # Backward compatible with older settings that stored single paths as strings.
+    last_frf_x_files: list[str] = field(default_factory=list)
+    last_frf_y_files: list[str] = field(default_factory=list)
     last_stability_file: str = ""
     # Default FRF filtering/windowing settings for the GUI (page-level defaults).
     default_frf_filtering: Dict[str, Any] = field(default_factory=dict)
@@ -33,8 +35,8 @@ class AppSettings:
             "default_channel_mapping": dict(self.default_channel_mapping or {}),
             "default_sensitivity_mapping": dict(self.default_sensitivity_mapping or {}),
             "default_sensitivities": dict(self.default_sensitivities or {}),
-            "last_frf_x_file": str(self.last_frf_x_file or ""),
-            "last_frf_y_file": str(self.last_frf_y_file or ""),
+            "last_frf_x_files": list(self.last_frf_x_files or []),
+            "last_frf_y_files": list(self.last_frf_y_files or []),
             "last_stability_file": str(self.last_stability_file or ""),
             "default_frf_filtering": dict(self.default_frf_filtering or {}),
         }
@@ -46,8 +48,12 @@ class AppSettings:
         raw_chan = d.get("default_channel_mapping") or {}
         raw_sens_map = d.get("default_sensitivity_mapping") or {}
         raw_sens = d.get("default_sensitivities") or {}
-        last_frf_x_file = d.get("last_frf_x_file") or ""
-        last_frf_y_file = d.get("last_frf_y_file") or ""
+        # New format (lists)
+        last_frf_x_files = d.get("last_frf_x_files")
+        last_frf_y_files = d.get("last_frf_y_files")
+        # Old format (single strings)
+        last_frf_x_file = d.get("last_frf_x_file")
+        last_frf_y_file = d.get("last_frf_y_file")
         last_stability_file = d.get("last_stability_file") or ""
         default_frf_filtering = d.get("default_frf_filtering") or {}
 
@@ -73,6 +79,30 @@ class AppSettings:
                     sens[str(k)] = float(v)
                 except Exception:
                     continue
+
+        def _coerce_path_list(v_list: Any, v_single: Any) -> list[str]:
+            out: list[str] = []
+            if isinstance(v_list, list):
+                for x in v_list:
+                    if x is None:
+                        continue
+                    s = str(x).strip()
+                    if s:
+                        out.append(s)
+            if not out and v_single is not None:
+                s = str(v_single).strip()
+                if s:
+                    out.append(s)
+            # Deduplicate while preserving order
+            seen: set[str] = set()
+            uniq: list[str] = []
+            for s in out:
+                if s in seen:
+                    continue
+                seen.add(s)
+                uniq.append(s)
+            return uniq
+
         return AppSettings(
             default_save_dir=Path(p),
             # Backwards-compatible default: if load dir isn't specified yet, start from save dir.
@@ -80,8 +110,8 @@ class AppSettings:
             default_channel_mapping=chan,
             default_sensitivity_mapping=sens_map,
             default_sensitivities=sens,
-            last_frf_x_file=str(last_frf_x_file or ""),
-            last_frf_y_file=str(last_frf_y_file or ""),
+            last_frf_x_files=_coerce_path_list(last_frf_x_files, last_frf_x_file),
+            last_frf_y_files=_coerce_path_list(last_frf_y_files, last_frf_y_file),
             last_stability_file=str(last_stability_file or ""),
             default_frf_filtering=dict(default_frf_filtering or {}) if isinstance(default_frf_filtering, dict) else {},
         )

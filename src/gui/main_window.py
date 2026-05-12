@@ -134,8 +134,8 @@ class MainWindow(QMainWindow):
         self._restoring_settings = True
         try:
             self._frf_root.set_file_paths(
-                self._app_settings.last_frf_x_file or "",
-                self._app_settings.last_frf_y_file or "",
+                list(self._app_settings.last_frf_x_files or []),
+                list(self._app_settings.last_frf_y_files or []),
             )
             self._stab_root.set_file_path(self._app_settings.last_stability_file or "")
         finally:
@@ -275,18 +275,33 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Failed to save settings", str(e))
 
-    def _on_frf_file_paths_changed(self, x_path: str, y_path: str) -> None:
+    def _on_frf_file_paths_changed(self, x_paths: object, y_paths: object) -> None:
         if self._restoring_settings:
             return
-        x_path = (x_path or "").strip()
-        y_path = (y_path or "").strip()
-        if (
-            x_path == (self._app_settings.last_frf_x_file or "")
-            and y_path == (self._app_settings.last_frf_y_file or "")
-        ):
+
+        def _coerce(v: object) -> list[str]:
+            if isinstance(v, list):
+                out = []
+                for x in v:
+                    if x is None:
+                        continue
+                    s = str(x).strip()
+                    if s:
+                        out.append(s)
+                return out
+            if v is None:
+                return []
+            s = str(v).strip()
+            return [s] if s else []
+
+        x_list = _coerce(x_paths)
+        y_list = _coerce(y_paths)
+
+        if x_list == (self._app_settings.last_frf_x_files or []) and y_list == (self._app_settings.last_frf_y_files or []):
             return
-        self._app_settings.last_frf_x_file = x_path
-        self._app_settings.last_frf_y_file = y_path
+
+        self._app_settings.last_frf_x_files = x_list
+        self._app_settings.last_frf_y_files = y_list
         try:
             save_app_settings(self._repo_root, self._app_settings)
         except Exception as e:

@@ -75,3 +75,10 @@ Log errors, wrong approaches, and **prevention rules** so agents and humans do n
 **Fix applied:** Switched the smoke test to create a minimal `QApplication([])` before creating any `QWidget`.
 **Prevention rule:** For Qt/PySide6 smoke tests, always create `QApplication` before instantiating any `QWidget` (or limit smoke tests to import-only).
 **Affected files:** None (command-line only)
+
+## Waited via sleep instead of progressing — 2026-05-12
+**What happened:** I paused work in multiple 30s wait blocks rather than continuing exploration/implementation while background scans were running.
+**Root cause:** Reached for a “wait” loop out of habit instead of switching to parallel exploration or direct reads.
+**Fix applied:** Continued by directly exploring the codebase and executing tasks in parallel where possible.
+**Prevention rule:** Never use idle waiting while unblocked; if background work is running, proceed with independent exploration/implementation steps.
+**Affected files:** None (process only)
