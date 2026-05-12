@@ -37,6 +37,20 @@ def run_frf_pipeline(exp_cfg_path: Path, sens_path: Path) -> None:
     sens = load_data.load_sensitivities(sens_path)
 
     params = frf_estimation.get_system_parameters()
+    if isinstance(exp_cfg, dict):
+        if "bias_window_size" in exp_cfg:
+            params["bias_window_size"] = int(exp_cfg["bias_window_size"])
+        if "wiener_mysize" in exp_cfg:
+            params["wiener_mysize"] = int(exp_cfg["wiener_mysize"])
+        filt = exp_cfg.get("filtering")
+        if isinstance(filt, dict):
+            if "bias_window_size" in filt:
+                params["bias_window_size"] = int(filt["bias_window_size"])
+            fp = filt.get("params")
+            if isinstance(fp, dict):
+                w = fp.get("wiener")
+                if isinstance(w, dict) and "mysize" in w:
+                    params["wiener_mysize"] = int(w["mysize"])
 
     directional = load_data.load_directional_data(exp_cfg, sens)
     data_source = exp_cfg.get("data_source", "file")

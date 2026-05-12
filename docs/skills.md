@@ -186,6 +186,17 @@ coh = (np.abs(Pur_avg) ** 2) / ((Puu_avg * Prr_avg) + 1e-30)
 
 ---
 
+## Wiener + bias (FRF GUI and shared `signal_processing`)
+**When to use:** You touch Wiener filtering, bias removal, or FRF filtering config (GUI chains are Wiener-only; legacy Savitzky–Golay keys in saved JSON are ignored).
+**Pattern:**
+- Bias / quiet segment: `remove_bias_window(x, bias_window_size)` → use returned index and length with `calculate_noise_power_from_window` on the **same** bias-corrected array passed to `apply_wiener_filter_legacy`.
+- Noise statistic: `calculate_noise_power_from_window` = segment variance (`ddof=0`), not `mean(x**2)`.
+- SciPy window: `apply_wiener_filter_legacy(..., mysize)` with `mysize` independent of `bias_window_size` (coerced odd internally).
+**Gotchas:** Missing `filtering.params.wiener.mysize` or `bias_window_size` in the GUI filtering dict raises at compute time by design.
+**Last used:** 2026-05-12 (Savitzky–Golay removed from analysis/GUI)
+
+---
+
 ## Scale window overlay in time-signal plots
 **When to use:** You plot a window function alongside time-domain processing steps and want it visible at the same amplitude scale as the signal being windowed.
 **Pattern:**

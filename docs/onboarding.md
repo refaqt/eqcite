@@ -49,6 +49,15 @@ Defaults are set in `src/main.py` (`DEFAULT_CONFIG`, `DEFAULT_SENS`). Edit `conf
 - **`analysis_type`: `"frf"`** — FRF estimation over configured CSV paths and FRF pairs.
 - **`analysis_type`: `"stability_measurement"`** — Stability measurement flow over configured files.
 
+## Unit tests
+
+From the repository root (set `PYTHONPATH` so `src` resolves as a package):
+
+```powershell
+$env:PYTHONPATH="."
+python -m unittest discover -s tests -p "test*.py" -v
+```
+
 ## Tools under `src/tools/`
 
 Run individual scripts as modules or scripts depending on how each file defines `main` (check the file header). Examples include data acquisition (`data-acquisition.py`), G-code helpers, and utilities.

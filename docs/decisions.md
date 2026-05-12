@@ -14,6 +14,12 @@ Lightweight log of **non-obvious** technical choices. Add an entry when picking 
 
 ---
 
+## Wiener noise variance + independent bias vs local window — 2026-05-12
+**Context:** The legacy Wiener path used `mean(x²)` on the raw trace while filtering bias-corrected data, which inflated `noise` vs SciPy’s local variance and could zero the output. Users also need separate control of the sliding “quiet segment” length and SciPy’s `mysize`.
+**Decision:** Use **`np.var(..., ddof=0)`** for noise power (same scale as `scipy.signal.wiener` `lVar`). Estimate noise on the **bias-corrected** signal. Implement sliding **min-variance** bias removal in `signal_processing.remove_bias_window`. Expose **`bias_window_size`** in the FRF GUI analysis block (and duplicate to top-level `experiment_cfg` for snapshots); require **`filtering.params.wiener.mysize`** when the Wiener step runs. Coerce Wiener **`mysize`** to **odd** ≥ 3. Batch params gain explicit **`wiener_mysize`** independent of **`bias_window_size`**.
+**Alternatives considered:** Keeping backward-compatible fallbacks when `mysize` or `bias_window_size` are missing in saved JSON; rejected until explicitly requested.
+**Consequences:** Older saved analyses without the new fields may fail at run time until re-saved from the GUI. CLI configs should include `bias_window_size` / `wiener_mysize` (and optional `filtering` mirroring the GUI) for parity.
+
 ## Qt (PySide6) desktop GUI + analysis folder format — 2026-04-22
 **Context:** The existing workflows were driven by JSON files and CLI-style entry points, but iterating on configurations and intermediate plots was becoming cumbersome. We need a GUI that can later evolve into the primary way to drive FRF and stability analysis.\n\n**Decision:** Implement a desktop GUI using **Qt via PySide6**, with an **analysis folder** persistence format: `analysis.json` snapshot + `results/figures` + `results/tables`. Keep global sensor sensitivities persisted in `config/sensitivities.json`.\n\n**Alternatives considered:**\n- Staying with JSON-only configuration\n- Reintroducing Tkinter for a “no extra dependency” GUI\n- Web UI (e.g. Streamlit)\n\n**Consequences:**\n- Adds a runtime dependency (`PySide6`).\n- Enables a scalable UI (tabs, sidebars, embedded Matplotlib figures) and a durable save/load story that can be GUI-driven later.\n- Stability pipeline remains legacy-mapping-dependent initially; the GUI will surface this and a later refactor can unify mapping via `load_data`.
 

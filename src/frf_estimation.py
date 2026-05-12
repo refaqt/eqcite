@@ -22,6 +22,8 @@ from pyFRF import FRF
 import sys
 from typing import Any, Dict, Optional, Tuple
 
+from . import signal_processing
+
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
 
@@ -60,14 +62,12 @@ def get_system_parameters():
     
     # Bias removal parameters
     bias_window_size = 1000  # Number of samples for bias estimation window
+
+    # Wiener: local mean/variance window for scipy.signal.wiener (independent of bias_window_size)
+    wiener_mysize = 1000
     
     # Wiener filter parameters
     wiener_filter = True  # Toggle to enable/disable Wiener filter for channels A0-A7
-    
-    # Savitzky-Golay filter parameters
-    savgol_filter = True  # Toggle to enable/disable Savitzky-Golay filter for channels A0-A7
-    savgol_window_length = 10  # Window length for Savitzky-Golay filter (must be odd)
-    savgol_polyorder = 2  # Polynomial order for Savitzky-Golay filter
     
     # Low-pass filter parameters (for analysis visualization only)
     lowpass_filter = False  # Toggle to enable/disable low-pass filter for channels A0-A7
@@ -113,10 +113,8 @@ def get_system_parameters():
         'v_u': v_u,
         'r_u': r_u,
         'bias_window_size': bias_window_size,
+        'wiener_mysize': wiener_mysize,
         'wiener_filter': wiener_filter,
-        'savgol_filter': savgol_filter,
-        'savgol_window_length': savgol_window_length,
-        'savgol_polyorder': savgol_polyorder,
         'lowpass_filter': lowpass_filter,
         'lowpass_bandwidth_hz': lowpass_bandwidth_hz,
         'input_window_type': input_window_type,
@@ -446,122 +444,24 @@ def parse_filename(filepath):
 def remove_bias(signal, window_size=1000):
     """
     Remove bias from signal by finding the minimal variance window and subtracting its mean.
-    
-    The function slides a window across the signal, calculates variance at each position,
-    finds the window with minimum variance (assumed to be the quietest/most stable region),
-    calculates the mean of that window, and subtracts it from the entire signal.
-    
-    Parameters:
-    -----------
-    signal : array_like
-        Input signal array
-    window_size : int
-        Size of the sliding window in samples (default: 1000)
-        
-    Returns:
-    --------
-    tuple : (bias_corrected_signal, min_var_idx, window_size)
-        bias_corrected_signal : array_like
-            Bias-corrected signal
-        min_var_idx : int
-            Starting index of the window with minimum variance
-        window_size : int
-            Size of the window used (may differ from input if signal is shorter)
-    
-    Notes:
-    ------
-    If the signal length is less than the window size, the mean of the entire signal
-    is used for bias removal (with a warning), and min_var_idx will be 0.
+
+    Delegates to ``signal_processing.remove_bias_window`` (single implementation).
     """
-    signal = np.asarray(signal)
-    signal_length = len(signal)
-    
-    # Handle case where signal is shorter than window
-    if signal_length < window_size:
-        print(f"Warning: Signal length ({signal_length}) is less than window size ({window_size}). "
-              f"Using entire signal for bias calculation.")
-        bias = np.mean(signal)
-        actual_window_size = signal_length
-        min_var_idx = 0
-        return signal - bias, min_var_idx, actual_window_size
-    
-    # Calculate variance for each window position
-    num_windows = signal_length - window_size + 1
-    variances = np.zeros(num_windows)
-    
-    for i in range(num_windows):
-        window = signal[i:i + window_size]
-        variances[i] = np.var(window)
-    
-    # Find window with minimum variance
-    min_var_idx = np.argmin(variances)
-    
-    # Calculate mean of the minimal variance window
-    bias = np.mean(signal[min_var_idx:min_var_idx + window_size])
-    
-    # Remove bias from entire signal
-    return signal - bias, min_var_idx, window_size
+    return signal_processing.remove_bias_window(signal, window_size)
+
 
 def calculate_noise_power(signal, window_start_idx, window_size):
-    """
-    Calculate noise power from a specific window using scipy's default method.
-    
-    This replicates scipy.signal.wiener's default noise calculation, which estimates
-    noise power as the average of local variance over the specified window.
-    
-    Parameters:
-    -----------
-    signal : array_like
-        Input signal array (should be bias-corrected)
-    window_start_idx : int
-        Starting index of the window for noise calculation
-    window_size : int
-        Size of the window in samples
-        
-    Returns:
-    --------
-    float : Noise power (average local variance)
-    """
-    signal = np.asarray(signal)
-    signal_length = len(signal)
-    
-    # Ensure window indices are valid
-    window_start_idx = max(0, min(window_start_idx, signal_length - 1))
-    window_end_idx = min(window_start_idx + window_size, signal_length)
-    actual_window_size = window_end_idx - window_start_idx
-    
-    if actual_window_size < 1:
-        # Fallback: use variance of entire signal
-        return np.var(signal)
-    
-    # Extract the window
-    window_data = signal[window_start_idx:window_end_idx]
-    
-    # Calculate local variance in the window
-    # scipy's default method: average of local variance
-    # For a single window, this is just the variance of that window
-    noise_power = np.var(window_data)
-    
-    return noise_power
+    """Noise variance on a slice; same scale as ``scipy.signal.wiener`` ``noise``."""
+    return signal_processing.calculate_noise_power_from_window(signal, window_start_idx, window_size)
+
 
 def apply_wiener_filter(data, noise_power, mysize):
     """
     Apply Wiener filter to the data using scipy.signal.wiener.
-    
-    Parameters:
-    -----------
-    data : array_like
-        Input signal array
-    noise_power : float
-        Noise power parameter for Wiener filter
-    mysize : int
-        Size of the Wiener filter window (should match bias window size)
-        
-    Returns:
-    --------
-    array_like : Wiener filtered signal
+
+    ``mysize`` is coerced to an odd length >= 3 (SciPy recommendation).
     """
-    return signal.wiener(data, mysize=mysize, noise=noise_power)
+    return signal_processing.apply_wiener_filter_legacy(data, noise_power, mysize)
 
 def apply_lowpass_filter(data, cutoff_hz, fs):
     """
@@ -585,50 +485,6 @@ def apply_lowpass_filter(data, cutoff_hz, fs):
     
     # Apply zero-phase filtering using filtfilt
     filtered_data = signal.filtfilt(b, a, data)
-    
-    return filtered_data
-
-def apply_savgol_filter(data, window_length, polyorder):
-    """
-    Apply Savitzky-Golay filter to the data.
-    
-    Parameters:
-    -----------
-    data : array_like
-        Input signal array
-    window_length : int
-        Window length for Savitzky-Golay filter (must be odd)
-    polyorder : int
-        Polynomial order for Savitzky-Golay filter
-        
-    Returns:
-    --------
-    array_like : Savitzky-Golay filtered signal
-    """
-    data = np.asarray(data)
-    signal_length = len(data)
-    
-    # Handle case where signal is shorter than window_length
-    if signal_length < window_length:
-        print(f"Warning: Signal length ({signal_length}) is less than window length ({window_length}). "
-              f"Returning original signal.")
-        return data
-    
-    # Ensure window_length is odd (required by savgol_filter)
-    if window_length % 2 == 0:
-        window_length = window_length - 1
-        if window_length < 3:
-            print(f"Warning: Adjusted window length ({window_length}) is too small. "
-                  f"Returning original signal.")
-            return data
-    
-    # Ensure polyorder is less than window_length
-    if polyorder >= window_length:
-        polyorder = window_length - 1
-        print(f"Warning: Polynomial order adjusted to {polyorder} (window_length - 1)")
-    
-    # Apply Savitzky-Golay filter
-    filtered_data = signal.savgol_filter(data, window_length, polyorder)
     
     return filtered_data
 
@@ -2109,51 +1965,6 @@ def plot_wiener_filtered_signals(time, bias_corrected_signals, wiener_filtered_s
     plt.tight_layout()
     # Do not call plt.show() here; show all figures once at the end.
 
-def plot_savgol_filtered_signals(time, raw_signals, savgol_filtered_signals, window_length, polyorder, show_plot=True):
-    """
-    Plot comparison of raw signals (after Wiener filter) and Savitzky-Golay filtered signals for A0-A7.
-    Creates a single figure with 2 rows and 4 columns (8 subplots total).
-    
-    Parameters:
-    -----------
-    time : array_like
-        Time array in seconds
-    raw_signals : dict
-        Dictionary with keys 'A0' through 'A7' containing signals after Wiener filter (before Savitzky-Golay)
-    savgol_filtered_signals : dict
-        Dictionary with keys 'A0' through 'A7' containing Savitzky-Golay filtered signals
-    window_length : int
-        Window length used for Savitzky-Golay filter (for display in labels)
-    polyorder : int
-        Polynomial order used for Savitzky-Golay filter (for display in labels)
-    show_plot : bool
-        Whether to display the plots
-    """
-    if not show_plot:
-        return
-    
-    signal_names = ['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7']
-    
-    # Create figure with 2 rows and 4 columns
-    fig, axes = plt.subplots(2, 4, figsize=(16, 8))
-    axes = axes.flatten()  # Flatten to 1D array for easy indexing
-    
-    for idx, name in enumerate(signal_names):
-        ax = axes[idx]
-        
-        ax.plot(time, raw_signals[name], 'r-', linewidth=1, alpha=0.7, label='Raw (after Wiener filter)')
-        ax.plot(time, savgol_filtered_signals[name], 'b-', linewidth=1, alpha=0.7, 
-                label=f'Savitzky-Golay (w={window_length}, p={polyorder})')
-        
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Voltage (V)')
-        ax.set_title(f'Savitzky-Golay Filtered Signal Comparison - {name}')
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=8)
-    
-    plt.tight_layout()
-    # Do not call plt.show() here; show all figures once at the end.
-
 def plot_time_domain_signals(time, u, x, y, show_plot=True, windows=None, tool_accel=None, tool_label=None, z_accel=None):
     """
     Plot time-domain signals u, x, y in a single figure with synchronized x-axes.
@@ -3257,31 +3068,17 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
                 noise_A5 = calculate_noise_power(original_A5, bias_idx_A5, actual_window_A5)
                 noise_A6 = calculate_noise_power(original_A6, bias_idx_A6, actual_window_A6)
                 noise_A7 = calculate_noise_power(original_A7, bias_idx_A7, actual_window_A7)
-                
+
+                wiener_mysize = int(params.get("wiener_mysize", 1000))
                 # Apply Wiener filter to A0-A7
-                A0 = apply_wiener_filter(A0, noise_A0, actual_window_A0)
-                A1 = apply_wiener_filter(A1, noise_A1, actual_window_A1)
-                A2 = apply_wiener_filter(A2, noise_A2, actual_window_A2)
-                A3 = apply_wiener_filter(A3, noise_A3, actual_window_A3)
-                A4 = apply_wiener_filter(A4, noise_A4, actual_window_A4)
-                A5 = apply_wiener_filter(A5, noise_A5, actual_window_A5)
-                A6 = apply_wiener_filter(A6, noise_A6, actual_window_A6)
-                A7 = apply_wiener_filter(A7, noise_A7, actual_window_A7)
-            
-            # Apply Savitzky-Golay filter to A0-A7 if enabled
-            use_savgol = params.get('savgol_filter', False)
-            if use_savgol:
-                window_length = params.get('savgol_window_length', 10)
-                polyorder = params.get('savgol_polyorder', 3)
-                
-                A0 = apply_savgol_filter(A0, window_length, polyorder)
-                A1 = apply_savgol_filter(A1, window_length, polyorder)
-                A2 = apply_savgol_filter(A2, window_length, polyorder)
-                A3 = apply_savgol_filter(A3, window_length, polyorder)
-                A4 = apply_savgol_filter(A4, window_length, polyorder)
-                A5 = apply_savgol_filter(A5, window_length, polyorder)
-                A6 = apply_savgol_filter(A6, window_length, polyorder)
-                A7 = apply_savgol_filter(A7, window_length, polyorder)
+                A0 = apply_wiener_filter(A0, noise_A0, wiener_mysize)
+                A1 = apply_wiener_filter(A1, noise_A1, wiener_mysize)
+                A2 = apply_wiener_filter(A2, noise_A2, wiener_mysize)
+                A3 = apply_wiener_filter(A3, noise_A3, wiener_mysize)
+                A4 = apply_wiener_filter(A4, noise_A4, wiener_mysize)
+                A5 = apply_wiener_filter(A5, noise_A5, wiener_mysize)
+                A6 = apply_wiener_filter(A6, noise_A6, wiener_mysize)
+                A7 = apply_wiener_filter(A7, noise_A7, wiener_mysize)
             
             # Calculate derived signals with measurement case (using filtered A0-A7)
             signals = calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measurement_case)
@@ -3781,16 +3578,17 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
             noise_A5 = max(calculate_noise_power(original_A5, bias_idx_A5, actual_window_A5), 1e-12)
             noise_A6 = max(calculate_noise_power(original_A6, bias_idx_A6, actual_window_A6), 1e-12)
             noise_A7 = max(calculate_noise_power(original_A7, bias_idx_A7, actual_window_A7), 1e-12)
-            
+
+            wiener_mysize = int(params.get("wiener_mysize", 1000))
             # Apply Wiener filter to A0-A7
-            A0 = apply_wiener_filter(A0, noise_A0, actual_window_A0)
-            A1 = apply_wiener_filter(A1, noise_A1, actual_window_A1)
-            A2 = apply_wiener_filter(A2, noise_A2, actual_window_A2)
-            A3 = apply_wiener_filter(A3, noise_A3, actual_window_A3)
-            A4 = apply_wiener_filter(A4, noise_A4, actual_window_A4)
-            A5 = apply_wiener_filter(A5, noise_A5, actual_window_A5)
-            A6 = apply_wiener_filter(A6, noise_A6, actual_window_A6)
-            A7 = apply_wiener_filter(A7, noise_A7, actual_window_A7)
+            A0 = apply_wiener_filter(A0, noise_A0, wiener_mysize)
+            A1 = apply_wiener_filter(A1, noise_A1, wiener_mysize)
+            A2 = apply_wiener_filter(A2, noise_A2, wiener_mysize)
+            A3 = apply_wiener_filter(A3, noise_A3, wiener_mysize)
+            A4 = apply_wiener_filter(A4, noise_A4, wiener_mysize)
+            A5 = apply_wiener_filter(A5, noise_A5, wiener_mysize)
+            A6 = apply_wiener_filter(A6, noise_A6, wiener_mysize)
+            A7 = apply_wiener_filter(A7, noise_A7, wiener_mysize)
 
         # Store Wiener filtered signals separately for plotting (if Wiener was applied)
         wiener_filtered_signals = None
@@ -3799,35 +3597,6 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
                 'A0': A0, 'A1': A1, 'A2': A2, 'A3': A3,
                 'A4': A4, 'A5': A5, 'A6': A6, 'A7': A7
             }
-
-        # Store signals before Savitzky-Golay filter (these are the "raw" signals for comparison)
-        raw_signals_before_savgol = {
-            'A0': A0.copy(), 'A1': A1.copy(), 'A2': A2.copy(), 'A3': A3.copy(),
-            'A4': A4.copy(), 'A5': A5.copy(), 'A6': A6.copy(), 'A7': A7.copy()
-        }
-        
-        # Apply Savitzky-Golay filter to A0-A7 if enabled
-        use_savgol = params.get('savgol_filter', False)
-        if use_savgol:
-            window_length = params.get('savgol_window_length', 10)
-            polyorder = params.get('savgol_polyorder', 3)
-            
-            A0 = apply_savgol_filter(A0, window_length, polyorder)
-            A1 = apply_savgol_filter(A1, window_length, polyorder)
-            A2 = apply_savgol_filter(A2, window_length, polyorder)
-            A3 = apply_savgol_filter(A3, window_length, polyorder)
-            A4 = apply_savgol_filter(A4, window_length, polyorder)
-            A5 = apply_savgol_filter(A5, window_length, polyorder)
-            A6 = apply_savgol_filter(A6, window_length, polyorder)
-            A7 = apply_savgol_filter(A7, window_length, polyorder)
-            
-            # Store Savitzky-Golay filtered signals for plotting
-            savgol_filtered_signals = {
-                'A0': A0, 'A1': A1, 'A2': A2, 'A3': A3,
-                'A4': A4, 'A5': A5, 'A6': A6, 'A7': A7
-            }
-        else:
-            savgol_filtered_signals = None
 
         # Store filtered signals (after all filters) for comparison plots
         filtered_signals = {
@@ -3880,13 +3649,6 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
                 'A7': corrected_signals['A7']
             }
             plot_wiener_filtered_signals(time, corrected_signals_A0_A7, wiener_filtered_signals, show_plot)
-        
-        # Show Savitzky-Golay filtered signals plot (if Savitzky-Golay filter was applied, only if show_all_figures is True)
-        if show_all_figures and use_savgol and savgol_filtered_signals is not None:
-            window_length = params.get('savgol_window_length', 10)
-            polyorder = params.get('savgol_polyorder', 3)
-            plot_savgol_filtered_signals(time, raw_signals_before_savgol, savgol_filtered_signals, 
-                                        window_length, polyorder, show_plot)
         
         # Calculate derived signals with measurement case (using filtered A0-A7)
         signals = calculate_derived_signals(A0, A1, A2, A3, A4, A5, A6, A7, params, measurement_case)

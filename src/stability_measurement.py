@@ -460,41 +460,26 @@ def process_stability_measurement(filepath, window_duration=DEFAULT_WINDOW_DURAT
         use_wiener = params.get('wiener_filter', True)
         if use_wiener:
             print("Applying Wiener filter...")
-            # Calculate noise power for each channel
-            noise_A0 = max(signal_processing.calculate_noise_power_from_window(original_signals['A0'], bias_idx_A0, actual_window_A0), 1e-12)
-            noise_A1 = max(signal_processing.calculate_noise_power_from_window(original_signals['A1'], bias_idx_A1, actual_window_A1), 1e-12)
-            noise_A2 = max(signal_processing.calculate_noise_power_from_window(original_signals['A2'], bias_idx_A2, actual_window_A2), 1e-12)
-            noise_A3 = max(signal_processing.calculate_noise_power_from_window(original_signals['A3'], bias_idx_A3, actual_window_A3), 1e-12)
-            noise_A4 = max(signal_processing.calculate_noise_power_from_window(original_signals['A4'], bias_idx_A4, actual_window_A4), 1e-12)
-            noise_A5 = max(signal_processing.calculate_noise_power_from_window(original_signals['A5'], bias_idx_A5, actual_window_A5), 1e-12)
-            noise_A6 = max(signal_processing.calculate_noise_power_from_window(original_signals['A6'], bias_idx_A6, actual_window_A6), 1e-12)
-            noise_A7 = max(signal_processing.calculate_noise_power_from_window(original_signals['A7'], bias_idx_A7, actual_window_A7), 1e-12)
+            wiener_mysize = int(params.get("wiener_mysize", 1000))
+            # Calculate noise power on bias-corrected channels (same segment as bias removal)
+            noise_A0 = max(signal_processing.calculate_noise_power_from_window(A0, bias_idx_A0, actual_window_A0), 1e-12)
+            noise_A1 = max(signal_processing.calculate_noise_power_from_window(A1, bias_idx_A1, actual_window_A1), 1e-12)
+            noise_A2 = max(signal_processing.calculate_noise_power_from_window(A2, bias_idx_A2, actual_window_A2), 1e-12)
+            noise_A3 = max(signal_processing.calculate_noise_power_from_window(A3, bias_idx_A3, actual_window_A3), 1e-12)
+            noise_A4 = max(signal_processing.calculate_noise_power_from_window(A4, bias_idx_A4, actual_window_A4), 1e-12)
+            noise_A5 = max(signal_processing.calculate_noise_power_from_window(A5, bias_idx_A5, actual_window_A5), 1e-12)
+            noise_A6 = max(signal_processing.calculate_noise_power_from_window(A6, bias_idx_A6, actual_window_A6), 1e-12)
+            noise_A7 = max(signal_processing.calculate_noise_power_from_window(A7, bias_idx_A7, actual_window_A7), 1e-12)
 
             # Apply Wiener filter
-            A0 = signal_processing.apply_wiener_filter_legacy(A0, noise_A0, actual_window_A0)
-            A1 = signal_processing.apply_wiener_filter_legacy(A1, noise_A1, actual_window_A1)
-            A2 = signal_processing.apply_wiener_filter_legacy(A2, noise_A2, actual_window_A2)
-            A3 = signal_processing.apply_wiener_filter_legacy(A3, noise_A3, actual_window_A3)
-            A4 = signal_processing.apply_wiener_filter_legacy(A4, noise_A4, actual_window_A4)
-            A5 = signal_processing.apply_wiener_filter_legacy(A5, noise_A5, actual_window_A5)
-            A6 = signal_processing.apply_wiener_filter_legacy(A6, noise_A6, actual_window_A6)
-            A7 = signal_processing.apply_wiener_filter_legacy(A7, noise_A7, actual_window_A7)
-        
-        # Apply Savitzky-Golay filter if enabled
-        use_savgol = params.get('savgol_filter', False)
-        if use_savgol:
-            print("Applying Savitzky-Golay filter...")
-            window_length = params.get('savgol_window_length', 10)
-            polyorder = params.get('savgol_polyorder', 3)
-            
-            A0 = signal_processing.apply_savgol_filter(A0, window_length, polyorder)
-            A1 = signal_processing.apply_savgol_filter(A1, window_length, polyorder)
-            A2 = signal_processing.apply_savgol_filter(A2, window_length, polyorder)
-            A3 = signal_processing.apply_savgol_filter(A3, window_length, polyorder)
-            A4 = signal_processing.apply_savgol_filter(A4, window_length, polyorder)
-            A5 = signal_processing.apply_savgol_filter(A5, window_length, polyorder)
-            A6 = signal_processing.apply_savgol_filter(A6, window_length, polyorder)
-            A7 = signal_processing.apply_savgol_filter(A7, window_length, polyorder)
+            A0 = signal_processing.apply_wiener_filter_legacy(A0, noise_A0, wiener_mysize)
+            A1 = signal_processing.apply_wiener_filter_legacy(A1, noise_A1, wiener_mysize)
+            A2 = signal_processing.apply_wiener_filter_legacy(A2, noise_A2, wiener_mysize)
+            A3 = signal_processing.apply_wiener_filter_legacy(A3, noise_A3, wiener_mysize)
+            A4 = signal_processing.apply_wiener_filter_legacy(A4, noise_A4, wiener_mysize)
+            A5 = signal_processing.apply_wiener_filter_legacy(A5, noise_A5, wiener_mysize)
+            A6 = signal_processing.apply_wiener_filter_legacy(A6, noise_A6, wiener_mysize)
+            A7 = signal_processing.apply_wiener_filter_legacy(A7, noise_A7, wiener_mysize)
         
         # Store filtered signals for comparison plots
         filtered_signals = {
