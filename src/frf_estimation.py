@@ -22,6 +22,8 @@ from pyFRF import FRF
 import sys
 from typing import Any, Dict, Optional, Tuple
 
+from . import signal_processing
+
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
 
@@ -60,6 +62,9 @@ def get_system_parameters():
     
     # Bias removal parameters
     bias_window_size = 1000  # Number of samples for bias estimation window
+
+    # Wiener: local mean/variance window for scipy.signal.wiener (independent of bias_window_size)
+    wiener_mysize = 1000
     
     # Wiener filter parameters
     wiener_filter = True  # Toggle to enable/disable Wiener filter for channels A0-A7
@@ -113,6 +118,7 @@ def get_system_parameters():
         'v_u': v_u,
         'r_u': r_u,
         'bias_window_size': bias_window_size,
+        'wiener_mysize': wiener_mysize,
         'wiener_filter': wiener_filter,
         'savgol_filter': savgol_filter,
         'savgol_window_length': savgol_window_length,
@@ -446,122 +452,24 @@ def parse_filename(filepath):
 def remove_bias(signal, window_size=1000):
     """
     Remove bias from signal by finding the minimal variance window and subtracting its mean.
-    
-    The function slides a window across the signal, calculates variance at each position,
-    finds the window with minimum variance (assumed to be the quietest/most stable region),
-    calculates the mean of that window, and subtracts it from the entire signal.
-    
-    Parameters:
-    -----------
-    signal : array_like
-        Input signal array
-    window_size : int
-        Size of the sliding window in samples (default: 1000)
-        
-    Returns:
-    --------
-    tuple : (bias_corrected_signal, min_var_idx, window_size)
-        bias_corrected_signal : array_like
-            Bias-corrected signal
-        min_var_idx : int
-            Starting index of the window with minimum variance
-        window_size : int
-            Size of the window used (may differ from input if signal is shorter)
-    
-    Notes:
-    ------
-    If the signal length is less than the window size, the mean of the entire signal
-    is used for bias removal (with a warning), and min_var_idx will be 0.
+
+    Delegates to ``signal_processing.remove_bias_window`` (single implementation).
     """
-    signal = np.asarray(signal)
-    signal_length = len(signal)
-    
-    # Handle case where signal is shorter than window
-    if signal_length < window_size:
-        print(f"Warning: Signal length ({signal_length}) is less than window size ({window_size}). "
-              f"Using entire signal for bias calculation.")
-        bias = np.mean(signal)
-        actual_window_size = signal_length
-        min_var_idx = 0
-        return signal - bias, min_var_idx, actual_window_size
-    
-    # Calculate variance for each window position
-    num_windows = signal_length - window_size + 1
-    variances = np.zeros(num_windows)
-    
-    for i in range(num_windows):
-        window = signal[i:i + window_size]
-        variances[i] = np.var(window)
-    
-    # Find window with minimum variance
-    min_var_idx = np.argmin(variances)
-    
-    # Calculate mean of the minimal variance window
-    bias = np.mean(signal[min_var_idx:min_var_idx + window_size])
-    
-    # Remove bias from entire signal
-    return signal - bias, min_var_idx, window_size
+    return signal_processing.remove_bias_window(signal, window_size)
+
 
 def calculate_noise_power(signal, window_start_idx, window_size):
-    """
-    Calculate noise power from a specific window using scipy's default method.
-    
-    This replicates scipy.signal.wiener's default noise calculation, which estimates
-    noise power as the average of local variance over the specified window.
-    
-    Parameters:
-    -----------
-    signal : array_like
-        Input signal array (should be bias-corrected)
-    window_start_idx : int
-        Starting index of the window for noise calculation
-    window_size : int
-        Size of the window in samples
-        
-    Returns:
-    --------
-    float : Noise power (average local variance)
-    """
-    signal = np.asarray(signal)
-    signal_length = len(signal)
-    
-    # Ensure window indices are valid
-    window_start_idx = max(0, min(window_start_idx, signal_length - 1))
-    window_end_idx = min(window_start_idx + window_size, signal_length)
-    actual_window_size = window_end_idx - window_start_idx
-    
-    if actual_window_size < 1:
-        # Fallback: use variance of entire signal
-        return np.var(signal)
-    
-    # Extract the window
-    window_data = signal[window_start_idx:window_end_idx]
-    
-    # Calculate local variance in the window
-    # scipy's default method: average of local variance
-    # For a single window, this is just the variance of that window
-    noise_power = np.var(window_data)
-    
-    return noise_power
+    """Noise variance on a slice; same scale as ``scipy.signal.wiener`` ``noise``."""
+    return signal_processing.calculate_noise_power_from_window(signal, window_start_idx, window_size)
+
 
 def apply_wiener_filter(data, noise_power, mysize):
     """
     Apply Wiener filter to the data using scipy.signal.wiener.
-    
-    Parameters:
-    -----------
-    data : array_like
-        Input signal array
-    noise_power : float
-        Noise power parameter for Wiener filter
-    mysize : int
-        Size of the Wiener filter window (should match bias window size)
-        
-    Returns:
-    --------
-    array_like : Wiener filtered signal
+
+    ``mysize`` is coerced to an odd length >= 3 (SciPy recommendation).
     """
-    return signal.wiener(data, mysize=mysize, noise=noise_power)
+    return signal_processing.apply_wiener_filter_legacy(data, noise_power, mysize)
 
 def apply_lowpass_filter(data, cutoff_hz, fs):
     """
@@ -3257,16 +3165,17 @@ def process_multiple_files(filepaths, measurement_case='case1', show_plot=True, 
                 noise_A5 = calculate_noise_power(original_A5, bias_idx_A5, actual_window_A5)
                 noise_A6 = calculate_noise_power(original_A6, bias_idx_A6, actual_window_A6)
                 noise_A7 = calculate_noise_power(original_A7, bias_idx_A7, actual_window_A7)
-                
+
+                wiener_mysize = int(params.get("wiener_mysize", 1000))
                 # Apply Wiener filter to A0-A7
-                A0 = apply_wiener_filter(A0, noise_A0, actual_window_A0)
-                A1 = apply_wiener_filter(A1, noise_A1, actual_window_A1)
-                A2 = apply_wiener_filter(A2, noise_A2, actual_window_A2)
-                A3 = apply_wiener_filter(A3, noise_A3, actual_window_A3)
-                A4 = apply_wiener_filter(A4, noise_A4, actual_window_A4)
-                A5 = apply_wiener_filter(A5, noise_A5, actual_window_A5)
-                A6 = apply_wiener_filter(A6, noise_A6, actual_window_A6)
-                A7 = apply_wiener_filter(A7, noise_A7, actual_window_A7)
+                A0 = apply_wiener_filter(A0, noise_A0, wiener_mysize)
+                A1 = apply_wiener_filter(A1, noise_A1, wiener_mysize)
+                A2 = apply_wiener_filter(A2, noise_A2, wiener_mysize)
+                A3 = apply_wiener_filter(A3, noise_A3, wiener_mysize)
+                A4 = apply_wiener_filter(A4, noise_A4, wiener_mysize)
+                A5 = apply_wiener_filter(A5, noise_A5, wiener_mysize)
+                A6 = apply_wiener_filter(A6, noise_A6, wiener_mysize)
+                A7 = apply_wiener_filter(A7, noise_A7, wiener_mysize)
             
             # Apply Savitzky-Golay filter to A0-A7 if enabled
             use_savgol = params.get('savgol_filter', False)
@@ -3781,16 +3690,17 @@ def process_measurement_file(filepath, measurement_case='case1', show_plot=True,
             noise_A5 = max(calculate_noise_power(original_A5, bias_idx_A5, actual_window_A5), 1e-12)
             noise_A6 = max(calculate_noise_power(original_A6, bias_idx_A6, actual_window_A6), 1e-12)
             noise_A7 = max(calculate_noise_power(original_A7, bias_idx_A7, actual_window_A7), 1e-12)
-            
+
+            wiener_mysize = int(params.get("wiener_mysize", 1000))
             # Apply Wiener filter to A0-A7
-            A0 = apply_wiener_filter(A0, noise_A0, actual_window_A0)
-            A1 = apply_wiener_filter(A1, noise_A1, actual_window_A1)
-            A2 = apply_wiener_filter(A2, noise_A2, actual_window_A2)
-            A3 = apply_wiener_filter(A3, noise_A3, actual_window_A3)
-            A4 = apply_wiener_filter(A4, noise_A4, actual_window_A4)
-            A5 = apply_wiener_filter(A5, noise_A5, actual_window_A5)
-            A6 = apply_wiener_filter(A6, noise_A6, actual_window_A6)
-            A7 = apply_wiener_filter(A7, noise_A7, actual_window_A7)
+            A0 = apply_wiener_filter(A0, noise_A0, wiener_mysize)
+            A1 = apply_wiener_filter(A1, noise_A1, wiener_mysize)
+            A2 = apply_wiener_filter(A2, noise_A2, wiener_mysize)
+            A3 = apply_wiener_filter(A3, noise_A3, wiener_mysize)
+            A4 = apply_wiener_filter(A4, noise_A4, wiener_mysize)
+            A5 = apply_wiener_filter(A5, noise_A5, wiener_mysize)
+            A6 = apply_wiener_filter(A6, noise_A6, wiener_mysize)
+            A7 = apply_wiener_filter(A7, noise_A7, wiener_mysize)
 
         # Store Wiener filtered signals separately for plotting (if Wiener was applied)
         wiener_filtered_signals = None

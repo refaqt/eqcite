@@ -121,29 +121,40 @@ def remove_bias_window(
     window_size: int,
 ) -> tuple[np.ndarray, int, int]:
     """
-    Remove DC bias and report the window used for noise estimation.
+    Remove DC bias by sliding-window minimum variance (quiet segment), same rule as batch FRF.
 
     Returns:
         (bias_corrected, window_start_idx, actual_window_size)
 
-    Notes:
-        This is designed to match the needs of the legacy FRF/stability pipelines
-        without duplicating their internal bias/noise bookkeeping.
+    The returned index and length identify the segment used for both bias removal
+    and (on the corrected signal) Wiener noise variance via
+    `calculate_noise_power_from_window`.
     """
-    data = np.asarray(signal_data, dtype=float)
-    n = len(data)
-    if n == 0:
-        return data, 0, 0
+    signal = np.asarray(signal_data, dtype=float)
+    signal_length = len(signal)
+    if signal_length == 0:
+        return signal, 0, 0
 
-    # Use the initial window by convention (quiet pre-impact section).
     window_size = int(window_size)
     if window_size <= 0:
-        return data, 0, 0
+        return signal, 0, 0
 
-    actual = min(window_size, n)
-    window_start = 0
-    bias = float(np.mean(data[window_start : window_start + actual]))
-    return data - bias, window_start, actual
+    if signal_length < window_size:
+        print(
+            f"Warning: Signal length ({signal_length}) is less than window size ({window_size}). "
+            "Using entire signal for bias calculation."
+        )
+        bias = float(np.mean(signal))
+        return signal - bias, 0, signal_length
+
+    num_windows = signal_length - window_size + 1
+    variances = np.zeros(num_windows)
+    for i in range(num_windows):
+        variances[i] = np.var(signal[i : i + window_size])
+
+    min_var_idx = int(np.argmin(variances))
+    bias = float(np.mean(signal[min_var_idx : min_var_idx + window_size]))
+    return signal - bias, min_var_idx, window_size
 
 
 def calculate_noise_power_from_window(
@@ -152,7 +163,10 @@ def calculate_noise_power_from_window(
     window_size: int,
 ) -> float:
     """
-    Estimate noise power from an explicit window (for compatibility with existing pipelines).
+    Noise variance on ``signal_data[window_start_idx : window_start_idx + window_size]``.
+
+    Uses population variance (``ddof=0``), matching ``scipy.signal.wiener`` local variance
+    ``mean(x^2) - mean(x)^2`` so the ``noise`` argument is on the same scale as ``lVar``.
     """
     data = np.asarray(signal_data, dtype=float)
     n = len(data)
@@ -169,7 +183,17 @@ def calculate_noise_power_from_window(
     if len(window) == 0:
         return 0.0
 
-    return float(np.mean(window**2))
+    return float(np.var(window, ddof=0))
+
+
+def wiener_mysize_to_odd(window_size: int) -> int:
+    """SciPy recommends odd ``mysize``; coerce to largest odd <= max(window_size, 3)."""
+    w = int(window_size)
+    if w < 3:
+        return 3
+    if w % 2 == 0:
+        return w - 1
+    return w
 
 
 def remove_bias(signal_data: np.ndarray, window_size: int) -> np.ndarray:
@@ -246,9 +270,11 @@ def apply_wiener_filter_legacy(
     Legacy-compatible Wiener filter wrapper (matches previous `frf_estimation.py` usage).
 
     This uses `scipy.signal.wiener` with explicit noise power and window size.
+    ``window_size`` is coerced to an odd length >= 3 (SciPy recommendation).
     """
     data = np.asarray(signal_data, dtype=float)
-    return signal.wiener(data, mysize=int(window_size), noise=float(noise_power))
+    mysize = wiener_mysize_to_odd(window_size)
+    return signal.wiener(data, mysize=mysize, noise=float(noise_power))
 
 
 def apply_savgol_filter(

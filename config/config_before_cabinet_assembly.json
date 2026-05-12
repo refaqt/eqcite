@@ -52,6 +52,8 @@
       "input": "F_y",
       "output": "y_tool"
     }
-  ]
+  ],
+  "bias_window_size": 1000,
+  "wiener_mysize": 1000
 }
 

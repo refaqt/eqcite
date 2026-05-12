@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QCheckBox,
+    QScrollArea,
     QVBoxLayout,
     QVBoxLayout,
     QWidget,
@@ -37,6 +38,16 @@ from PySide6.QtWidgets import (
 
 from ... import frf_estimation, load_data, signal_processing
 from ..plot_widgets import MatplotlibFigureWidget
+
+
+def _required_wiener_mysize(filt_params: Dict[str, Any]) -> int:
+    w = filt_params.get("wiener")
+    if not isinstance(w, dict) or "mysize" not in w:
+        raise ValueError("filtering.params.wiener.mysize is required (integer samples)")
+    m = int(w["mysize"])
+    if m < 1:
+        raise ValueError("wiener.mysize must be >= 1")
+    return m
 
 
 @dataclass
@@ -181,14 +192,19 @@ class FrfRootPage(QWidget):
 
     def build_experiment_cfg(self) -> Dict[str, Any]:
         base = self._page_results._build_experiment_cfg()
-        base["filtering"] = self._page_filtering.build_filtering_cfg()
+        f_cfg = self._page_filtering.build_filtering_cfg()
+        base["filtering"] = f_cfg
+        if "bias_window_size" in f_cfg:
+            base["bias_window_size"] = int(f_cfg["bias_window_size"])
         return base
 
     def apply_experiment_cfg(self, cfg: Dict[str, Any]) -> None:
         cfg = dict(cfg or {})
-        filt = cfg.get("filtering") or {}
+        filt = dict(cfg.get("filtering") or {})
+        if "bias_window_size" in cfg and "bias_window_size" not in filt:
+            filt["bias_window_size"] = cfg["bias_window_size"]
         if isinstance(filt, dict):
-            self._page_filtering.apply_filtering_cfg(dict(filt))
+            self._page_filtering.apply_filtering_cfg(filt)
 
     @staticmethod
     def _wrap(widget: QWidget) -> QWidget:
@@ -528,6 +544,16 @@ class _ChainList(QWidget):
         self._emit_changed()
 
 
+class _WidthSyncedScrollArea(QScrollArea):
+    """Scroll area whose document widget stays at least as wide as the viewport."""
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        w = self.widget()
+        if w is not None:
+            w.setMinimumWidth(max(0, self.viewport().width()))
+
+
 class FrfFilteringPage(QWidget):
     default_save_requested = Signal(dict)
     filtering_changed = Signal(dict)
@@ -535,9 +561,20 @@ class FrfFilteringPage(QWidget):
     def __init__(self) -> None:
         super().__init__()
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = _WidthSyncedScrollArea()
+        scroll.setWidgetResizable(False)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 12)
+        layout.setSpacing(16)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         title = QLabel("Analysis settings")
         title.setStyleSheet("font-weight: 600;")
@@ -550,6 +587,8 @@ class FrfFilteringPage(QWidget):
         io_box = QWidget()
         io_form = QFormLayout(io_box)
         io_form.setContentsMargins(0, 0, 0, 0)
+        io_form.setVerticalSpacing(8)
+        io_form.setHorizontalSpacing(10)
 
         self._io_output_family = QComboBox()
         for key, label in [
@@ -583,9 +622,14 @@ class FrfFilteringPage(QWidget):
         filt_params = QWidget()
         filt_form = QFormLayout(filt_params)
         filt_form.setContentsMargins(0, 0, 0, 0)
+        filt_form.setVerticalSpacing(8)
+        filt_form.setHorizontalSpacing(10)
+
+        self._bias_window_size = QLineEdit("1000")
+        filt_form.addRow(QLabel("Bias window size (samples)"), self._bias_window_size)
 
         self._wiener_mysize = QLineEdit("1000")
-        filt_form.addRow("Wiener mysize (samples)", self._wiener_mysize)
+        filt_form.addRow("Wiener local window / mysize (samples)", self._wiener_mysize)
 
         self._savgol_wl = QLineEdit("10")
         self._savgol_po = QLineEdit("2")
@@ -599,6 +643,8 @@ class FrfFilteringPage(QWidget):
         win_params = QWidget()
         win_form = QFormLayout(win_params)
         win_form.setContentsMargins(0, 0, 0, 0)
+        win_form.setVerticalSpacing(8)
+        win_form.setHorizontalSpacing(10)
 
         self._win_in_type = QComboBox()
         self._win_out_type = QComboBox()
@@ -648,6 +694,8 @@ class FrfFilteringPage(QWidget):
         est_box = QWidget()
         est_form = QFormLayout(est_box)
         est_form.setContentsMargins(0, 0, 0, 0)
+        est_form.setVerticalSpacing(8)
+        est_form.setHorizontalSpacing(10)
 
         self._estimator_type = QComboBox()
         for nm in ["H1", "H2", "Hv"]:
@@ -664,7 +712,9 @@ class FrfFilteringPage(QWidget):
         self._btn_save_default = QPushButton("Save as default")
         self._btn_save_default.clicked.connect(self._on_save_default)
         layout.addWidget(self._btn_save_default)
-        layout.addStretch(1)
+
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
 
         # Default order: wiener then savgol (enabled)
         self._u_chain.set_chain([{"name": "wiener", "enabled": True}, {"name": "savgol", "enabled": True}])
@@ -674,6 +724,7 @@ class FrfFilteringPage(QWidget):
         self._refresh_preview()
 
         for w in [
+            self._bias_window_size,
             self._wiener_mysize,
             self._savgol_wl,
             self._savgol_po,
@@ -782,6 +833,7 @@ class FrfFilteringPage(QWidget):
             return float((txt or "").strip() or "0")
 
         return {
+            "bias_window_size": i(self._bias_window_size.text()),
             "estimator_type": str(self._estimator_type.currentData() or "Hv"),
             "io_selection": {
                 "input_family": "force",
@@ -811,6 +863,8 @@ class FrfFilteringPage(QWidget):
 
     def apply_filtering_cfg(self, cfg: Dict[str, Any]) -> None:
         cfg = dict(cfg or {})
+        if "bias_window_size" in cfg:
+            self._bias_window_size.setText(str(int(cfg["bias_window_size"])))
         # IO selection
         io_sel = cfg.get("io_selection") or {}
         if isinstance(io_sel, dict):
@@ -1448,10 +1502,13 @@ class FrfResultsPage(QWidget):
         y_accel = np.asarray(data[y_name], dtype=float)  # treated as acceleration
 
         params = frf_estimation.get_system_parameters()
-        # Apply FRF GUI filtering/windowing settings if present in analysis config.
-        # The experiment config is loaded via `_build_experiment_cfg()` and passed to load_data,
-        # but the FRF computation itself is driven by `params` here.
         filtering = dict(self._filtering_cfg or {})
+        if "bias_window_size" in filtering:
+            params["bias_window_size"] = int(filtering["bias_window_size"])
+        fp = filtering.get("params") if isinstance(filtering.get("params"), dict) else {}
+        wn = fp.get("wiener") if isinstance(fp, dict) else None
+        if isinstance(wn, dict) and "mysize" in wn:
+            params["wiener_mysize"] = int(wn["mysize"])
         params["estimator_type"] = str(filtering.get("estimator_type") or params.get("estimator_type") or "Hv")
 
         u_proc, y_proc, params = apply_frf_filtering_and_windowing(
@@ -1971,7 +2028,13 @@ class FrfResultsPage(QWidget):
         dt = float(time[1] - time[0])
         fs = 1.0 / dt
 
-        bias_n = int(params.get("bias_window_size", 0) or 0)
+        filtering_cfg = dict(filtering_cfg or {})
+        if "bias_window_size" not in filtering_cfg:
+            raise ValueError("filtering configuration must include bias_window_size (samples)")
+        bias_n = int(filtering_cfg["bias_window_size"])
+        if bias_n <= 0:
+            raise ValueError("bias_window_size must be a positive integer")
+
         u_bias, u_bias_idx, u_bias_actual = signal_processing.remove_bias_window(u, bias_n)
         r_bias, r_bias_idx, r_bias_actual = signal_processing.remove_bias_window(resp, bias_n)
 
@@ -1979,7 +2042,6 @@ class FrfResultsPage(QWidget):
         r_steps: List[_SignalStep] = [_SignalStep("raw", resp), _SignalStep("bias_corrected", r_bias)]
 
         # Apply filter chains (pre-windowing) as configured.
-        filtering_cfg = dict(filtering_cfg or {})
         u_chain = filtering_cfg.get("u_chain") if isinstance(filtering_cfg.get("u_chain"), list) else []
         r_chain = filtering_cfg.get("resp_chain") if isinstance(filtering_cfg.get("resp_chain"), list) else []
         filt_params = filtering_cfg.get("params") if isinstance(filtering_cfg.get("params"), dict) else {}
@@ -1994,15 +2056,10 @@ class FrfResultsPage(QWidget):
                 if not entry.get("enabled", False):
                     continue
                 if nm == "wiener":
-                    mysize = int(
-                        ((filt_params.get("wiener") or {}).get("mysize") or (u_bias_actual if is_u else r_bias_actual))
-                        or 1
-                    )
-                    mysize = max(1, mysize)
-                    noise_src = u if is_u else resp
+                    mysize = _required_wiener_mysize(filt_params)
                     noise_idx = u_bias_idx if is_u else r_bias_idx
                     noise_actual = u_bias_actual if is_u else r_bias_actual
-                    noise_pow = signal_processing.calculate_noise_power_from_window(noise_src, noise_idx, noise_actual)
+                    noise_pow = signal_processing.calculate_noise_power_from_window(x_cur, noise_idx, noise_actual)
                     x_cur = signal_processing.apply_wiener_filter_legacy(x_cur, noise_pow, mysize)
                     steps.append(_SignalStep("wiener", x_cur))
                 elif nm == "savgol":
@@ -2141,8 +2198,11 @@ def apply_frf_filtering_and_windowing(
 
     dt = float(time[1] - time[0])
 
-    # Bias removal
-    bias_n = int(params.get("bias_window_size", 0) or 0)
+    if "bias_window_size" not in filtering_cfg:
+        raise ValueError("filtering configuration must include bias_window_size (samples)")
+    bias_n = int(filtering_cfg["bias_window_size"])
+    if bias_n <= 0:
+        raise ValueError("bias_window_size must be a positive integer")
     u_bias, u_bias_idx, u_bias_actual = signal_processing.remove_bias_window(u, bias_n)
     r_bias, r_bias_idx, r_bias_actual = signal_processing.remove_bias_window(resp, bias_n)
 
@@ -2159,12 +2219,10 @@ def apply_frf_filtering_and_windowing(
             if not entry.get("enabled", False):
                 continue
             if nm == "wiener":
-                mysize = int(((filt_params.get("wiener") or {}).get("mysize") or (u_bias_actual if is_u else r_bias_actual)) or 1)
-                mysize = max(1, mysize)
-                noise_src = u if is_u else resp
+                mysize = _required_wiener_mysize(filt_params)
                 noise_idx = u_bias_idx if is_u else r_bias_idx
                 noise_actual = u_bias_actual if is_u else r_bias_actual
-                noise_pow = signal_processing.calculate_noise_power_from_window(noise_src, noise_idx, noise_actual)
+                noise_pow = signal_processing.calculate_noise_power_from_window(x_cur, noise_idx, noise_actual)
                 x_cur = signal_processing.apply_wiener_filter_legacy(x_cur, noise_pow, mysize)
             elif nm == "savgol":
                 p = filt_params.get("savgol") or {}
