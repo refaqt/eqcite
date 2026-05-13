@@ -1,0 +1,23 @@
+---
+description: Delegation, scope limits, coordination, and validation when using subagents or parallel agents
+alwaysApply: false
+---
+
+# Subagents
+
+## Delegation
+
+- Before spawning a subagent, define scope, inputs, expected outputs, and failure conditions.
+- Subagents must not exceed scope; if work is out of scope, stop and report back.
+- Each subagent returns a short completion report: done, skipped, and issues found.
+- Subagents do not call other subagents unless the workflow explicitly requires it.
+
+## Coordination
+
+- The orchestrating agent owns final integration; validate subagent output before merging.
+- Parallel subagents must not edit the same file; assign disjoint file ownership first.
+- Subagents have read access by default; grant write access explicitly per task.
+
+## Safety
+
+- Pause for user confirmation before deleting files, running migrations, or changing environment configuration.

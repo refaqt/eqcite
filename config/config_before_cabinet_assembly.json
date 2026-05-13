@@ -54,6 +54,92 @@
     }
   ],
   "bias_window_size": 1000,
-  "wiener_mysize": 1000
+  "wiener_mysize": 1000,
+  "sensor_catalog": [
+    {
+      "id": "sens_0",
+      "model": "a_5g",
+      "manufacturer": "",
+      "sensitivity_vs_per_v": 49.05,
+      "unit": "m/s\u00b2"
+    },
+    {
+      "id": "sens_1",
+      "model": "a_50g",
+      "manufacturer": "",
+      "sensitivity_vs_per_v": 245.25,
+      "unit": "m/s\u00b2"
+    },
+    {
+      "id": "sens_2",
+      "model": "F_10x",
+      "manufacturer": "",
+      "sensitivity_vs_per_v": 40.0,
+      "unit": "N"
+    }
+  ],
+  "mapping": [
+    {
+      "name": "acc_workbed_x",
+      "channel": 4,
+      "sensor_id": "sens_0"
+    },
+    {
+      "name": "acc_workbed_y",
+      "channel": 5,
+      "sensor_id": "sens_0"
+    },
+    {
+      "name": "acc_tool_x",
+      "channel": 7,
+      "sensor_id": "sens_1"
+    },
+    {
+      "name": "acc_tool_y",
+      "channel": 7,
+      "sensor_id": "sens_1"
+    },
+    {
+      "name": "acc_spindle_top",
+      "channel": 0,
+      "sensor_id": "sens_0"
+    },
+    {
+      "name": "acc_spindle_left",
+      "channel": 2,
+      "sensor_id": "sens_0"
+    },
+    {
+      "name": "acc_spindle_right",
+      "channel": 3,
+      "sensor_id": "sens_0"
+    },
+    {
+      "name": "hammer_x",
+      "channel": 6,
+      "sensor_id": "sens_2"
+    },
+    {
+      "name": "hammer_y",
+      "channel": 6,
+      "sensor_id": "sens_2"
+    }
+  ],
+  "expressions": [],
+  "analysis_io": {
+    "x": {
+      "input": "hammer_x",
+      "output": "acc_tool_x"
+    },
+    "y": {
+      "input": "hammer_y",
+      "output": "acc_tool_y"
+    }
+  },
+  "simulation_signal_map": {
+    "hammer_x": "F_x",
+    "hammer_y": "F_y",
+    "resp_x": "x_tool",
+    "resp_y": "y_tool"
+  }
 }
-

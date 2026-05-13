@@ -1,0 +1,9 @@
+---
+description: Stack and execution context for this repository
+alwaysApply: true
+---
+
+# Repository profile
+
+- [Describe languages, frameworks, and runtime assumptions for this repo.]
+- Run commands from the repository root unless a task says otherwise.

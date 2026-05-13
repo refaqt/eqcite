@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Callable, Dict, Optional, Tuple, List
 
 import numpy as np
 from scipy import signal
@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
 )
 
-from ... import frf_estimation, load_data, signal_processing
+from ... import experiment_config, expression_eval, frf_estimation, load_data, signal_processing
 from ..plot_widgets import MatplotlibFigureWidget
 
 
@@ -69,16 +69,8 @@ def _strip_savgol_from_filtering_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-@dataclass
-class FrfInputModel:
-    data_source: str = "file"  # "file" | "simulation"
-    file_paths_x: List[str] = None  # type: ignore[assignment]
-    file_paths_y: List[str] = None  # type: ignore[assignment]
-    simulation: Dict[str, Any] = None  # type: ignore[assignment]
-    channel_mapping: Dict[str, int] = None  # type: ignore[assignment]
-    sensitivity_mapping: Dict[str, str] = None  # type: ignore[assignment]
-
-
+from .frf_model import FrfInputModel
+from .frf_experiment_config import FrfSensorConfigPage
 @dataclass
 class _DirectionalFrfResult:
     direction: str  # "x" | "y"
@@ -119,6 +111,9 @@ class _DirectionalProcessing:
     fft_u_complex: Dict[str, np.ndarray]  # step-name -> FFT complex
     fft_resp_complex: Dict[str, np.ndarray]
 
+    io_input_name: str = ""
+    io_output_name: str = ""
+
 
 @dataclass
 class _DirectionalMeasurement:
@@ -131,7 +126,7 @@ class _DirectionalMeasurement:
 
 
 class FrfRootPage(QWidget):
-    default_sensor_config_save_requested = Signal(dict, dict, dict)
+    default_experiment_config_save_requested = Signal(dict)
     default_filtering_save_requested = Signal(dict)
     file_paths_changed = Signal(object, object)  # (x_paths, y_paths) where each is List[str]
 
@@ -144,20 +139,27 @@ class FrfRootPage(QWidget):
         repo_root = Path(__file__).resolve().parents[3]
         cfg_path = repo_root / "config" / "config_before_cabinet_assembly.json"
         base = json_load(cfg_path) if cfg_path.exists() else {}
-        self._input_model = FrfInputModel(
-            simulation={},
-            file_paths_x=[],
-            file_paths_y=[],
-            channel_mapping=dict(base.get("channel_mapping", {}) or {}),
-            sensitivity_mapping=dict(base.get("sensitivity_mapping", {}) or {}),
-        )
+        sens_path = repo_root / "config" / "sensitivities.json"
+        try:
+            sens = load_data.load_sensitivities(sens_path) if sens_path.exists() else {}
+        except Exception:
+            sens = {}
+        if not experiment_config.uses_new_experiment_schema(base) and (
+            base.get("channel_mapping") or base.get("sensitivity_mapping")
+        ):
+            base = experiment_config.migrate_legacy_experiment_cfg(base, sens)
+
+        self._input_model = FrfInputModel.from_experiment_cfg(base)
 
         self._page_input = FrfInputPage(self._input_model)
         self._page_sensor = FrfSensorConfigPage(self._input_model)
         self._page_filtering = FrfFilteringPage()
-        self._page_results = FrfResultsPage(self._input_model)
+        self._page_results = FrfResultsPage(
+            self._input_model,
+            sync_experiment_widgets=self._page_sensor.sync_from_widgets,
+        )
 
-        self._page_sensor.default_save_requested.connect(self.default_sensor_config_save_requested)
+        self._page_sensor.default_save_requested.connect(self.default_experiment_config_save_requested)
         self._page_input.file_paths_changed.connect(self.file_paths_changed)
         self._page_filtering.default_save_requested.connect(self.default_filtering_save_requested)
         self._page_filtering.filtering_changed.connect(self._page_results.set_filtering_cfg)
@@ -167,7 +169,7 @@ class FrfRootPage(QWidget):
         self._stack.addWidget(self._wrap(self._page_filtering))
         self._stack.addWidget(self._wrap(self._page_results))
 
-        for name in ["Input data", "Sensor configuration", "Analysis settings", "Results"]:
+        for name in ["Input data", "Experiment configuration", "Analysis settings", "Results"]:
             self._menu.addItem(QListWidgetItem(name))
         self._menu.setCurrentRow(0)
         self._menu.currentRowChanged.connect(self._stack.setCurrentIndex)
@@ -191,17 +193,22 @@ class FrfRootPage(QWidget):
     def set_file_paths(self, x_paths: List[str], y_paths: List[str]) -> None:
         self._page_input.set_file_paths(list(x_paths or []), list(y_paths or []))
 
+    def apply_default_experiment_config(self, cfg: Dict[str, Any]) -> None:
+        self._page_sensor.apply_experiment_config(dict(cfg or {}))
+
     def apply_default_sensor_config(
         self,
         channel_mapping: Dict[str, int],
         sensitivity_mapping: Dict[str, str],
         sensitivities: Dict[str, float],
     ) -> None:
-        self._page_sensor.apply_default_sensor_config(
-            channel_mapping=channel_mapping,
-            sensitivity_mapping=sensitivity_mapping,
-            sensitivities=sensitivities,
-        )
+        """Backward-compatible entry point: migrates legacy triple to new schema."""
+        legacy = {
+            "channel_mapping": dict(channel_mapping or {}),
+            "sensitivity_mapping": dict(sensitivity_mapping or {}),
+        }
+        migrated = experiment_config.migrate_legacy_experiment_cfg(legacy, dict(sensitivities or {}))
+        self.apply_default_experiment_config(migrated)
 
     def export_results(self, analysis_folder: Path) -> dict:
         return self._page_results.export_results(analysis_folder)
@@ -210,6 +217,7 @@ class FrfRootPage(QWidget):
         self._page_filtering.apply_filtering_cfg(dict(filtering_cfg or {}))
 
     def build_experiment_cfg(self) -> Dict[str, Any]:
+        self._page_sensor.sync_from_widgets()
         base = self._page_results._build_experiment_cfg()
         f_cfg = self._page_filtering.build_filtering_cfg()
         base["filtering"] = f_cfg
@@ -219,6 +227,21 @@ class FrfRootPage(QWidget):
 
     def apply_experiment_cfg(self, cfg: Dict[str, Any]) -> None:
         cfg = dict(cfg or {})
+        frag = {
+            k: cfg[k]
+            for k in (
+                "sensor_catalog",
+                "mapping",
+                "expressions",
+                "analysis_io",
+                "simulation_signal_map",
+                "channel_mapping",
+                "sensitivity_mapping",
+            )
+            if k in cfg
+        }
+        if frag:
+            self._page_sensor.apply_experiment_config(frag)
         filt = dict(cfg.get("filtering") or {})
         if "bias_window_size" in cfg and "bias_window_size" not in filt:
             filt["bias_window_size"] = cfg["bias_window_size"]
@@ -599,27 +622,6 @@ class FrfFilteringPage(QWidget):
         title.setStyleSheet("font-weight: 600;")
         layout.addWidget(title)
 
-        # Output selection (input is fixed to Force F_x/F_y)
-        io_header = QLabel("Output selection")
-        io_header.setStyleSheet("font-weight: 600; font-style: italic;")
-        layout.addWidget(io_header)
-        io_box = QWidget()
-        io_form = QFormLayout(io_box)
-        io_form.setContentsMargins(0, 0, 0, 0)
-        io_form.setVerticalSpacing(8)
-        io_form.setHorizontalSpacing(10)
-
-        self._io_output_family = QComboBox()
-        for key, label in [
-            ("tool", "Tool (x_tool/y_tool)"),
-            ("spindle", "Spindle (x_spindle/y_spindle)"),
-        ]:
-            self._io_output_family.addItem(label, userData=key)
-        # Default matches previous behavior (force input -> tool output)
-        self._io_output_family.setCurrentIndex(0)
-        io_form.addRow(QLabel("Output"), self._io_output_family)
-        layout.addWidget(io_box)
-
         filtering_header = QLabel("Filtering")
         filtering_header.setStyleSheet("font-weight: 600; font-style: italic;")
         layout.addWidget(filtering_header)
@@ -671,10 +673,9 @@ class FrfFilteringPage(QWidget):
         win_form.addRow(QLabel("Output window type"), self._win_out_type)
 
         self._win_hann_width = QLineEdit("0.05")
-        self._win_pre = QLineEdit("0.05")
-        self._win_post = QLineEdit("0.1")
-        self._win_beta = QLineEdit("0.25")
-        self._win_rolloff = QLineEdit("0.005")
+        self._win_rolloff = QLineEdit("0.01875")
+        self._win_max_start = QLineEdit("-0.03125")
+        self._win_max_end = QLineEdit("0.08125")
         self._win_trigger_pct = QLineEdit("0.1")
         self._win_low_pct = QLineEdit("0.001")
         self._win_sliding = QLineEdit("200")
@@ -689,10 +690,9 @@ class FrfFilteringPage(QWidget):
             self._win_rows[key] = (lab, w)
 
         _add_row("window_hann_width", "window_hann_width (s)", self._win_hann_width)
-        _add_row("window_pre_seconds", "window_pre_seconds (s)", self._win_pre)
-        _add_row("window_post_seconds", "window_post_seconds (s)", self._win_post)
-        _add_row("window_beta", "window_beta", self._win_beta)
-        _add_row("window_rolloff_seconds", "window_rolloff_seconds (s)", self._win_rolloff)
+        _add_row("window_rolloff_seconds", "Rolloff time (s)", self._win_rolloff)
+        _add_row("window_max_start_seconds", "Window max start (s, vs peak)", self._win_max_start)
+        _add_row("window_max_end_seconds", "Window max end (s, vs peak)", self._win_max_end)
         _add_row("window_trigger_percent", "window_trigger_percent", self._win_trigger_pct)
         _add_row("window_low_percent", "window_low_percent", self._win_low_pct)
         _add_row("window_sliding_size", "window_sliding_size (samples)", self._win_sliding)
@@ -741,10 +741,9 @@ class FrfFilteringPage(QWidget):
             self._bias_window_size,
             self._wiener_mysize,
             self._win_hann_width,
-            self._win_pre,
-            self._win_post,
-            self._win_beta,
             self._win_rolloff,
+            self._win_max_start,
+            self._win_max_end,
             self._win_trigger_pct,
             self._win_low_pct,
             self._win_sliding,
@@ -758,7 +757,6 @@ class FrfFilteringPage(QWidget):
         self._win_in_type.currentIndexChanged.connect(self._on_window_type_changed)
         self._win_out_type.currentIndexChanged.connect(self._on_window_type_changed)
         self._estimator_type.currentIndexChanged.connect(self._on_estimator_changed)
-        self._io_output_family.currentIndexChanged.connect(self._refresh_preview)
 
         self._update_window_param_visibility()
         self._update_estimator_help()
@@ -792,7 +790,11 @@ class FrfFilteringPage(QWidget):
         if "exponential" in active:
             show |= {"window_decay_db"}
         if "raised-cosine" in active:
-            show |= {"window_pre_seconds", "window_post_seconds", "window_beta"}
+            show |= {
+                "window_rolloff_seconds",
+                "window_max_start_seconds",
+                "window_max_end_seconds",
+            }
         if "signal-based" in active:
             show |= {
                 "window_rolloff_seconds",
@@ -847,10 +849,6 @@ class FrfFilteringPage(QWidget):
         return {
             "bias_window_size": i(self._bias_window_size.text()),
             "estimator_type": str(self._estimator_type.currentData() or "Hv"),
-            "io_selection": {
-                "input_family": "force",
-                "output_family": str(self._io_output_family.currentData() or "tool"),
-            },
             "u_chain": self._u_chain.get_chain(),
             "resp_chain": self._resp_chain.get_chain(),
             "params": {
@@ -860,10 +858,9 @@ class FrfFilteringPage(QWidget):
                 "input_window_type": str(self._win_in_type.currentData() or "hann"),
                 "output_window_type": str(self._win_out_type.currentData() or "exponential"),
                 "window_hann_width": f(self._win_hann_width.text()),
-                "window_pre_seconds": f(self._win_pre.text()),
-                "window_post_seconds": f(self._win_post.text()),
-                "window_beta": f(self._win_beta.text()),
                 "window_rolloff_seconds": f(self._win_rolloff.text()),
+                "window_max_start_seconds": f(self._win_max_start.text()),
+                "window_max_end_seconds": f(self._win_max_end.text()),
                 "window_trigger_percent": f(self._win_trigger_pct.text()),
                 "window_low_percent": f(self._win_low_pct.text()),
                 "window_sliding_size": i(self._win_sliding.text()),
@@ -876,19 +873,14 @@ class FrfFilteringPage(QWidget):
         cfg = _strip_savgol_from_filtering_cfg(dict(cfg or {}))
         if "bias_window_size" in cfg:
             self._bias_window_size.setText(str(int(cfg["bias_window_size"])))
-        # IO selection
-        io_sel = cfg.get("io_selection") or {}
-        if isinstance(io_sel, dict):
-            def _set_combo(cb: QComboBox, value: str) -> None:
-                for idx in range(cb.count()):
-                    if cb.itemData(idx) == value:
-                        cb.setCurrentIndex(idx)
-                        return
 
-            if "output_family" in io_sel:
-                _set_combo(self._io_output_family, str(io_sel.get("output_family") or "tool"))
+        def _set_combo(cb: QComboBox, value: str) -> None:
+            for idx in range(cb.count()):
+                if cb.itemData(idx) == value:
+                    cb.setCurrentIndex(idx)
+                    return
 
-        # Estimator
+        # Legacy io_selection removed from filtering config
         if "estimator_type" in cfg:
             desired = str(cfg.get("estimator_type") or "Hv")
             for idx in range(self._estimator_type.count()):
@@ -913,12 +905,18 @@ class FrfFilteringPage(QWidget):
             _set_combo(self._win_in_type, str(win.get("input_window_type") or "hann"))
             _set_combo(self._win_out_type, str(win.get("output_window_type") or "exponential"))
 
+            win = dict(win)
+            if any(
+                k in win
+                for k in ("window_pre_seconds", "window_post_seconds", "window_beta")
+            ):
+                win.update(signal_processing.normalize_raised_cosine_window_params(win))
+
             mapping = {
                 "window_hann_width": self._win_hann_width,
-                "window_pre_seconds": self._win_pre,
-                "window_post_seconds": self._win_post,
-                "window_beta": self._win_beta,
                 "window_rolloff_seconds": self._win_rolloff,
+                "window_max_start_seconds": self._win_max_start,
+                "window_max_end_seconds": self._win_max_end,
                 "window_trigger_percent": self._win_trigger_pct,
                 "window_low_percent": self._win_low_pct,
                 "window_sliding_size": self._win_sliding,
@@ -935,9 +933,15 @@ class FrfFilteringPage(QWidget):
 
 
 class FrfResultsPage(QWidget):
-    def __init__(self, model: FrfInputModel) -> None:
+    def __init__(
+        self,
+        model: FrfInputModel,
+        *,
+        sync_experiment_widgets: Optional[Callable[[], None]] = None,
+    ) -> None:
         super().__init__()
         self._model = model
+        self._sync_experiment_widgets = sync_experiment_widgets or (lambda: None)
         self._filtering_cfg: Dict[str, Any] = {}
         self._x_measurements: List[_DirectionalMeasurement] = []
         self._y_measurements: List[_DirectionalMeasurement] = []
@@ -950,6 +954,7 @@ class FrfResultsPage(QWidget):
         self._last_raw_x: Optional[Dict[int, np.ndarray]] = None
         self._last_raw_y: Optional[Dict[int, np.ndarray]] = None
         self._last_run_meta: Dict[str, Any] = {}
+        self._last_exp_cfg: Dict[str, Any] = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -962,6 +967,10 @@ class FrfResultsPage(QWidget):
         self._run_btn = QPushButton("Generate results")
         self._run_btn.clicked.connect(self._run)
         layout.addWidget(self._run_btn)
+
+        self._io_resolved_label = QLabel("")
+        self._io_resolved_label.setWordWrap(True)
+        layout.addWidget(self._io_resolved_label)
 
         self._tabs = QTabWidget()
         self._tab_selectors: Dict[str, Tuple[QComboBox, QComboBox]] = {}
@@ -1210,30 +1219,27 @@ class FrfResultsPage(QWidget):
         self._filtering_cfg = _strip_savgol_from_filtering_cfg(dict(cfg or {}))
 
     def _build_experiment_cfg(self) -> Dict[str, Any]:
-        # Start from defaults and override from model.
         repo_root = Path(__file__).resolve().parents[3]
         cfg_path = repo_root / "config" / "config_before_cabinet_assembly.json"
         base = json_load(cfg_path) if cfg_path.exists() else {}
-        base["analysis_type"] = "frf"
-        base["data_source"] = self._model.data_source
-        if self._model.channel_mapping:
-            base["channel_mapping"] = dict(self._model.channel_mapping)
-        if self._model.sensitivity_mapping:
-            base["sensitivity_mapping"] = dict(self._model.sensitivity_mapping)
+        out = dict(base)
+        out["analysis_type"] = "frf"
+        out["data_source"] = self._model.data_source
+        out.update(self._model.to_experiment_cfg_fragment())
         if self._model.data_source == "simulation":
-            base["simulation"] = self._model.simulation or {}
+            out["simulation"] = self._model.simulation or {}
         else:
-            # directional file paths
-            base["file_paths_x"] = list(self._model.file_paths_x or [])
-            base["file_paths_y"] = list(self._model.file_paths_y or [])
-        return base
+            out["file_paths_x"] = list(self._model.file_paths_x or [])
+            out["file_paths_y"] = list(self._model.file_paths_y or [])
+        return out
 
     def _run(self) -> None:
         try:
+            self._sync_experiment_widgets()
             exp_cfg = self._build_experiment_cfg()
-            repo_root = Path(__file__).resolve().parents[3]
-            sens = load_data.load_sensitivities(repo_root / "config" / "sensitivities.json")
-            directional = load_data.load_directional_data(exp_cfg, sens)
+            self._last_exp_cfg = dict(exp_cfg)
+            experiment_config.validate_analysis_io(exp_cfg)
+            directional = load_data.load_directional_data(exp_cfg, {})
 
             self._x_measurements = self._compute_measurement_list(directional.get("x"), direction="x")
             self._y_measurements = self._compute_measurement_list(directional.get("y"), direction="y")
@@ -1271,11 +1277,29 @@ class FrfResultsPage(QWidget):
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             }
 
+            self._refresh_resolved_io_label()
             self._populate_measurement_dropdowns()
             for tid in ["raw_mosaic", "time_steps", "fft_mag", "coherence", "force_psd", "real_frf", "bode_disp", "bode_accel"]:
                 self._redraw_tab(tid)
         except Exception as e:
             QMessageBox.critical(self, "FRF run failed", str(e))
+
+    def _refresh_resolved_io_label(self) -> None:
+        parts: List[str] = []
+        if self._last_proc_x is not None:
+            parts.append(
+                f"X input: {self._last_proc_x.io_input_name or '?'}; "
+                f"output: {self._last_proc_x.io_output_name or '?'}"
+            )
+        if self._last_proc_y is not None:
+            parts.append(
+                f"Y input: {self._last_proc_y.io_input_name or '?'}; "
+                f"output: {self._last_proc_y.io_output_name or '?'}"
+            )
+        if parts:
+            self._io_resolved_label.setText("Resolved I/O — " + " | ".join(parts))
+        else:
+            self._io_resolved_label.clear()
 
     def _compute_measurement_list(self, items: object, *, direction: str) -> List[_DirectionalMeasurement]:
         if not isinstance(items, list):
@@ -1467,44 +1491,12 @@ class FrfResultsPage(QWidget):
         if data is None:
             return None, None
 
-        def _key_for_family(family: str, direction: str) -> str:
-            family = (family or "").strip().lower()
-            if family == "force":
-                return "F_x" if direction == "x" else "F_y"
-            if family == "tool":
-                return "x_tool" if direction == "x" else "y_tool"
-            if family == "spindle":
-                return "x_spindle" if direction == "x" else "y_spindle"
-            raise ValueError(f"Unknown IO family '{family}' (expected force/tool/spindle)")
+        exp_cfg = dict(getattr(self, "_last_exp_cfg", {}) or {})
+        u_name, y_name = experiment_config.resolve_analysis_io_names(exp_cfg, direction)
 
-        io_sel = (self._filtering_cfg or {}).get("io_selection")
-        if isinstance(io_sel, dict):
-            in_family = str(io_sel.get("input_family") or "force")
-            out_family = str(io_sel.get("output_family") or "tool")
-            u_name = _key_for_family(in_family, direction)
-            y_name = _key_for_family(out_family, direction)
-            if u_name not in data:
-                raise ValueError(
-                    f"Missing required input signal for {direction}: '{u_name}' (from input_family={in_family})"
-                )
-            if y_name not in data or data.get(y_name) is None:
-                raise ValueError(
-                    f"Missing required output signal for {direction}: '{y_name}' (from output_family={out_family})"
-                )
-        else:
-            # Backward-compat: previous heuristic (force -> tool, else spindle fallback).
-            u_name = "F_x" if direction == "x" else "F_y"
-            y_name = "x_tool" if direction == "x" else "y_tool"
-
-            if u_name not in data or y_name not in data:
-                # Try spindle signals as fallback
-                y_name = "x_spindle" if direction == "x" else "y_spindle"
-            if u_name not in data or y_name not in data or data[y_name] is None:
-                raise ValueError(f"Missing required signals for {direction}: need {u_name} and {y_name}")
+        u, y_accel = experiment_config.bind_directional_io_signals(data, u_name, y_name)
 
         time = np.asarray(data["time"])
-        u = np.asarray(data[u_name], dtype=float)
-        y_accel = np.asarray(data[y_name], dtype=float)  # treated as acceleration
 
         params = frf_estimation.get_system_parameters()
         filtering = dict(self._filtering_cfg or {})
@@ -1528,7 +1520,14 @@ class FrfResultsPage(QWidget):
         H_disp = accel_to_disp_over_force(f, H_accel)
 
         proc = self._compute_processing_steps(
-            time=time, u=u, resp=y_accel, direction=direction, params=params, filtering_cfg=filtering
+            time=time,
+            u=u,
+            resp=y_accel,
+            direction=direction,
+            params=params,
+            filtering_cfg=filtering,
+            io_input_name=u_name,
+            io_output_name=y_name,
         )
         return ((f, H_disp), (f, H_accel)), proc
 
@@ -1724,32 +1723,37 @@ class FrfResultsPage(QWidget):
                 line = ax.plot(t, s.y, linewidth=1.0, label=f"{prefix}{s.name}")[0]
                 line.set_visible(s.name in default_visible)
 
+        def _pfx(proc: Optional[_DirectionalProcessing], default: str, io: str) -> str:
+            if proc is not None and getattr(proc, io, ""):
+                return str(getattr(proc, io)) + ":"
+            return default
+
         title_map = {
-            "force_x": "Force (X) processing steps",
-            "resp_x": "Response (X) processing steps",
-            "force_y": "Force (Y) processing steps",
-            "resp_y": "Response (Y) processing steps",
+            "force_x": "Input (X) processing steps",
+            "resp_x": "Output (X) processing steps",
+            "force_y": "Input (Y) processing steps",
+            "resp_y": "Output (Y) processing steps",
         }
 
         if mode == "force_x" and x_proc is not None:
-            add_steps(ax, x_proc.time, x_proc.u_steps, prefix="Fx:")
+            add_steps(ax, x_proc.time, x_proc.u_steps, prefix=_pfx(x_proc, "Fx:", "io_input_name"))
             ax.set_ylabel("Force (N)")
         elif mode == "resp_x" and x_proc is not None:
-            add_steps(ax, x_proc.time, x_proc.resp_steps, prefix="x:")
-            ax.set_ylabel("Response (m/s²)")
+            add_steps(ax, x_proc.time, x_proc.resp_steps, prefix=_pfx(x_proc, "x:", "io_output_name"))
+            ax.set_ylabel("Acceleration (m/s²)")
         elif mode == "force_y" and y_proc is not None:
-            add_steps(ax, y_proc.time, y_proc.u_steps, prefix="Fy:")
+            add_steps(ax, y_proc.time, y_proc.u_steps, prefix=_pfx(y_proc, "Fy:", "io_input_name"))
             ax.set_ylabel("Force (N)")
         elif mode == "resp_y" and y_proc is not None:
-            add_steps(ax, y_proc.time, y_proc.resp_steps, prefix="y:")
-            ax.set_ylabel("Response (m/s²)")
+            add_steps(ax, y_proc.time, y_proc.resp_steps, prefix=_pfx(y_proc, "y:", "io_output_name"))
+            ax.set_ylabel("Acceleration (m/s²)")
         else:
             if x_proc is not None:
-                add_steps(ax, x_proc.time, x_proc.u_steps, prefix="Fx:")
+                add_steps(ax, x_proc.time, x_proc.u_steps, prefix=_pfx(x_proc, "Fx:", "io_input_name"))
                 ax.set_ylabel("Force (N)")
                 mode = "force_x"
             elif y_proc is not None:
-                add_steps(ax, y_proc.time, y_proc.u_steps, prefix="Fy:")
+                add_steps(ax, y_proc.time, y_proc.u_steps, prefix=_pfx(y_proc, "Fy:", "io_input_name"))
                 ax.set_ylabel("Force (N)")
                 mode = "force_y"
 
@@ -2023,6 +2027,8 @@ class FrfResultsPage(QWidget):
         direction: str,
         params: Dict[str, Any],
         filtering_cfg: Dict[str, Any] | None = None,
+        io_input_name: str = "",
+        io_output_name: str = "",
     ) -> _DirectionalProcessing:
         time = np.asarray(time, dtype=float)
         u = np.asarray(u, dtype=float)
@@ -2169,6 +2175,8 @@ class FrfResultsPage(QWidget):
             fft_resp_mag=fft_r_mag,
             fft_u_complex=fft_u_complex,
             fft_resp_complex=fft_r_complex,
+            io_input_name=str(io_input_name or ""),
+            io_output_name=str(io_output_name or ""),
         )
 
 
@@ -2255,216 +2263,4 @@ def accel_to_disp_over_force(f: np.ndarray, H_accel: np.ndarray) -> np.ndarray:
     out[mask] = H_accel[mask] / (-omega2[mask])
     out[~mask] = 0.0
     return out
-
-
-class FrfSensorConfigPage(QWidget):
-    default_save_requested = Signal(dict, dict, dict)
-
-    def __init__(self, model: FrfInputModel) -> None:
-        super().__init__()
-        self._model = model
-        self._repo_root = Path(__file__).resolve().parents[3]
-        self._sens_path = self._repo_root / "config" / "sensitivities.json"
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-
-        title = QLabel("Sensor configuration")
-        title.setStyleSheet("font-weight: 600;")
-        layout.addWidget(title)
-
-        tabs = QTabWidget()
-        layout.addWidget(tabs, 1)
-
-        self._mapping_table = QTableWidget(0, 3)
-        self._mapping_table.setHorizontalHeaderLabels(["Sensor name", "Channel idx", "Sensitivity name"])
-        self._mapping_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._mapping_table.customContextMenuRequested.connect(self._mapping_context_menu)
-        self._mapping_table.itemChanged.connect(self._sync_mapping_from_table)
-        tabs.addTab(self._mapping_table, "Channel + sensitivity mapping")
-
-        self._sens_table = QTableWidget(0, 2)
-        self._sens_table.setHorizontalHeaderLabels(["Sensitivity name", "Value"])
-        self._sens_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._sens_table.customContextMenuRequested.connect(self._sens_context_menu)
-        self._sens_table.itemChanged.connect(self._auto_save_sensitivities)
-        tabs.addTab(self._sens_table, "Sensitivities")
-
-        self._btn_save_default = QPushButton("Save as default")
-        self._btn_save_default.clicked.connect(self._emit_save_default)
-        layout.addWidget(self._btn_save_default)
-
-        self._reload_from_model()
-        self._reload_sensitivities()
-
-    def apply_default_sensor_config(
-        self,
-        channel_mapping: Dict[str, int],
-        sensitivity_mapping: Dict[str, str],
-        sensitivities: Dict[str, float],
-    ) -> None:
-        self._model.channel_mapping = dict(channel_mapping or {})
-        self._model.sensitivity_mapping = dict(sensitivity_mapping or {})
-
-        self._reload_from_model()
-
-        # Make the sensitivity table consistent with the saved defaults by writing the file once.
-        # This also keeps the existing "auto-save sensitivities to config/sensitivities.json" behavior intact.
-        if sensitivities is not None:
-            payload: Dict[str, float] = {}
-            if isinstance(sensitivities, dict):
-                for k, v in sensitivities.items():
-                    try:
-                        payload[str(k)] = float(v)
-                    except Exception:
-                        continue
-            self._sens_path.parent.mkdir(parents=True, exist_ok=True)
-            self._sens_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            self._reload_sensitivities()
-
-    def _reload_from_model(self) -> None:
-        self._mapping_table.blockSignals(True)
-        try:
-            self._mapping_table.setRowCount(0)
-            keys = sorted(set(self._model.channel_mapping.keys()) | set(self._model.sensitivity_mapping.keys()))
-            for k in keys:
-                self._append_mapping_row(
-                    sensor_name=k,
-                    channel_idx=self._model.channel_mapping.get(k),
-                    sens_name=self._model.sensitivity_mapping.get(k),
-                )
-        finally:
-            self._mapping_table.blockSignals(False)
-
-    def _append_mapping_row(self, sensor_name: str = "", channel_idx: Optional[int] = None, sens_name: str = "") -> None:
-        r = self._mapping_table.rowCount()
-        self._mapping_table.insertRow(r)
-        self._mapping_table.setItem(r, 0, QTableWidgetItem(sensor_name))
-        self._mapping_table.setItem(r, 1, QTableWidgetItem("" if channel_idx is None else str(channel_idx)))
-        self._mapping_table.setItem(r, 2, QTableWidgetItem(sens_name or ""))
-
-    def _mapping_context_menu(self, pos) -> None:
-        menu = QMenu(self)
-        act_add = menu.addAction("Add row")
-        act_del = menu.addAction("Delete selected row(s)")
-        act = menu.exec(self._mapping_table.mapToGlobal(pos))
-        if act == act_add:
-            self._mapping_table.blockSignals(True)
-            try:
-                self._append_mapping_row()
-            finally:
-                self._mapping_table.blockSignals(False)
-        elif act == act_del:
-            rows = sorted({i.row() for i in self._mapping_table.selectedIndexes()}, reverse=True)
-            if not rows:
-                return
-            self._mapping_table.blockSignals(True)
-            try:
-                for r in rows:
-                    self._mapping_table.removeRow(r)
-            finally:
-                self._mapping_table.blockSignals(False)
-            self._sync_mapping_from_table()
-
-    def _sync_mapping_from_table(self) -> None:
-        chan: Dict[str, int] = {}
-        sens_map: Dict[str, str] = {}
-        for r in range(self._mapping_table.rowCount()):
-            name_item = self._mapping_table.item(r, 0)
-            ch_item = self._mapping_table.item(r, 1)
-            s_item = self._mapping_table.item(r, 2)
-            if name_item is None:
-                continue
-            sensor_name = (name_item.text() or "").strip()
-            if not sensor_name:
-                continue
-            if ch_item is not None:
-                txt = (ch_item.text() or "").strip()
-                if txt:
-                    try:
-                        chan[sensor_name] = int(txt)
-                    except ValueError:
-                        # leave it out; the run step will validate anyway
-                        pass
-            if s_item is not None:
-                s_txt = (s_item.text() or "").strip()
-                if s_txt:
-                    sens_map[sensor_name] = s_txt
-        self._model.channel_mapping = chan
-        self._model.sensitivity_mapping = sens_map
-
-    def _reload_sensitivities(self) -> None:
-        self._sens_table.blockSignals(True)
-        try:
-            self._sens_table.setRowCount(0)
-            if not self._sens_path.exists():
-                return
-            data = json_load(self._sens_path)
-            for k in sorted([kk for kk in data.keys() if not str(kk).startswith("//")]):
-                r = self._sens_table.rowCount()
-                self._sens_table.insertRow(r)
-                self._sens_table.setItem(r, 0, QTableWidgetItem(str(k)))
-                self._sens_table.setItem(r, 1, QTableWidgetItem(str(data[k])))
-        finally:
-            self._sens_table.blockSignals(False)
-
-    def _sens_context_menu(self, pos) -> None:
-        menu = QMenu(self)
-        act_add = menu.addAction("Add sensitivity")
-        act_del = menu.addAction("Delete selected row(s)")
-        act = menu.exec(self._sens_table.mapToGlobal(pos))
-        if act == act_add:
-            self._sens_table.blockSignals(True)
-            try:
-                r = self._sens_table.rowCount()
-                self._sens_table.insertRow(r)
-                self._sens_table.setItem(r, 0, QTableWidgetItem("new_sensitivity"))
-                self._sens_table.setItem(r, 1, QTableWidgetItem("1.0"))
-            finally:
-                self._sens_table.blockSignals(False)
-            self._auto_save_sensitivities()
-        elif act == act_del:
-            rows = sorted({i.row() for i in self._sens_table.selectedIndexes()}, reverse=True)
-            if not rows:
-                return
-            self._sens_table.blockSignals(True)
-            try:
-                for r in rows:
-                    self._sens_table.removeRow(r)
-            finally:
-                self._sens_table.blockSignals(False)
-            self._auto_save_sensitivities()
-
-    def _auto_save_sensitivities(self) -> None:
-        data = self._collect_sensitivities_from_table()
-        self._sens_path.parent.mkdir(parents=True, exist_ok=True)
-        self._sens_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-    def _collect_sensitivities_from_table(self) -> Dict[str, float]:
-        data: Dict[str, float] = {}
-        for r in range(self._sens_table.rowCount()):
-            k_item = self._sens_table.item(r, 0)
-            v_item = self._sens_table.item(r, 1)
-            if k_item is None or v_item is None:
-                continue
-            k = (k_item.text() or "").strip()
-            if not k or k.startswith("//"):
-                continue
-            v_txt = (v_item.text() or "").strip()
-            if not v_txt:
-                continue
-            try:
-                data[k] = float(v_txt)
-            except ValueError:
-                continue
-        return data
-
-    def _emit_save_default(self) -> None:
-        self._sync_mapping_from_table()
-        self.default_save_requested.emit(
-            dict(self._model.channel_mapping or {}),
-            dict(self._model.sensitivity_mapping or {}),
-            dict(self._collect_sensitivities_from_table()),
-        )
 

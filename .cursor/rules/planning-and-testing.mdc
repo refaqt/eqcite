@@ -1,0 +1,26 @@
+---
+description: Planning, code quality, dependencies, and verification before declaring work done
+alwaysApply: false
+---
+
+# Planning and quality
+
+## Before coding
+
+- For multi-file work, plan which files change, what is added, edge cases, and side effects before editing.
+- Break large features into atomic steps; verify each step before the next.
+- Check for existing utilities before adding dependencies, patterns, or abstractions unless the user asks.
+
+## While coding
+
+- Follow naming and structure from adjacent files; keep functions small and single-purpose.
+- Handle errors explicitly; do not swallow exceptions silently.
+- Do not delete code unless you are certain it is unused; if unsure, comment with `// TODO: remove if confirmed unused`.
+- Do not leave debug logs, prints, or commented-out test code in committed files.
+- Add comments only when the why is not obvious from the what.
+
+## Testing
+
+- Run existing tests when practical before declaring work complete.
+- For new logic, add at least a minimal smoke test unless the user says not to.
+- State clearly when a change is untested and why.

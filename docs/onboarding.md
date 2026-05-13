@@ -34,7 +34,7 @@ python -m src.gui.app
 ```
 
 - The GUI supports FRF and stability tabs, plus saving/loading analyses.
-- App-level settings (like default save folder) are stored in `config/app_settings.json`.
+- App-level settings (default save folder, **default FRF experiment configuration**, last-selected file paths) are stored in `config/app_settings.json`.
 
 ## Running the main pipeline
 
@@ -75,3 +75,12 @@ Run individual scripts as modules or scripts depending on how each file defines 
 ## IDE notes
 
 There is a nested `.idea` under `src/`; team preference may be to open the **repo root** in the IDE for consistent paths and `python -m src.main`.
+
+## Cursor / Agent
+
+- Project agent guidance lives in `.cursor/rules/` and `.cursor/skills/` (version-controlled).
+- Open the **repository root** so Cursor discovers those paths.
+- Prefer project rules over **Settings → Rules → User Rules**; duplicate user rules increase context and can conflict.
+- Living docs the agent uses: `docs/architecture.md`, `docs/mistakes.md`, `docs/skills.md`, `docs/decisions.md`, `docs/onboarding.md`.
+- Missing `docs/` files can be bootstrapped from `.cursor/bootstrap/docs/`.
+- To reuse this workflow in another repo, see `.cursor/README.md`.

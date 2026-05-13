@@ -39,7 +39,7 @@ Lightweight log of **non-obvious** technical choices. Add an entry when picking 
 ## Persist default FRF sensor configuration in app settings — 2026-04-22
 **Context:** The FRF GUI allows editing channel mapping and sensitivity mapping, and sensitivity values. Users want a one-click way to persist a preferred configuration and have it restored automatically on the next launch without modifying the shared experiment config templates under `config/`.
 
-**Decision:** Add a “Save as default” action under FRF → Sensor configuration that stores the mapping and sensitivity values in `config/app_settings.json` (via `AppSettings`) and auto-applies them on startup.
+**Decision:** Add a “Save as default” action under FRF → **Experiment configuration** that stores the full experiment schema blob in `config/app_settings.json` (via `AppSettings.default_experiment_config`) and auto-applies it on startup. Legacy triples (`default_channel_mapping`, `default_sensitivity_mapping`, `default_sensitivities`) remain readable for migration only.
 
 **Alternatives considered:**
 - Overwriting `config/config_before_cabinet_assembly.json` to make it the new “default”
@@ -83,3 +83,21 @@ Lightweight log of **non-obvious** technical choices. Add an entry when picking 
 **Alternatives considered:**\n- Average magnitude/phase directly (incorrect for complex data)\n- Use pyFRF’s multi-tap averaging path everywhere (larger refactor; GUI currently uses a lighter SciPy-based path)\n- Pair X and Y measurements by index (not desired; X/Y should be independent)
 
 **Consequences:**\n- Additional UI state (per-tab measurement selection, per-tab average toggle).\n- Requires retaining complex FFT bins and Welch/CSD spectra terms in the GUI processing structure.\n- Produces averages that respect complex cancellation/phase, aligning with standard FRF practice.
+
+## FRF experiment configuration schema + restricted expressions — 2026-05-12
+**Context:** Channel mapping was tied to global `sensitivities.json` keys and hard-coded `sensor_model` transforms (`F_x`, `x_tool`, …). Users need editable sensors, mapping, optional math on mapped channels, and explicit per-direction FRF I/O without maintaining parallel “tool vs spindle” branches in the filtering UI.
+**Decision:** Introduce `sensor_catalog`, `mapping`, `expressions`, `analysis_io` (X/Y each with force-only input and acceleration-only output), and optional `simulation_signal_map`. Implement expressions with a **whitelisted `ast`** evaluator (`src/expression_eval.py`) allowing `+ - * /`, unary `+/-`, and `sin`/`cos` only, referencing **mapping names** (v1). Persist GUI defaults as `AppSettings.default_experiment_config`. Migrate legacy JSON in-memory via `experiment_config.migrate_legacy_experiment_cfg`.
+**Alternatives considered:** Adding `numexpr`/`asteval`; allowing expressions to reference other expressions (requires dependency ordering); keeping `sensor_model` in the default file path forever.
+**Consequences:** `load_data` gains a second code path keyed on non-empty `sensor_catalog`. CLI `main.py` derives `frf_pairs_x/y` from `analysis_io` when the new schema is active. Stability analysis still uses its legacy path until unified.
+
+## Force-only FRF input and acceleration-only output — 2026-05-12
+**Context:** Displacement FRF is derived from accelerance via \(1 / -\omega^2\); mixing arbitrary physical types breaks compliance/accelerance interpretation.
+**Decision:** Classify variables from catalog units (`N` vs `m/s²`) and expression AST homogeneity; expose only matching names in the Input/Output tab; validate `analysis_io` on save and at FRF run for the new schema.
+**Alternatives considered:** Letting users pick any variable and soft-warning only; inferring units from expressions with mixed references.
+**Consequences:** Users cannot select an arbitrary voltage trace as “output” without labeling the catalog row as `m/s²` (physical meaning remains user responsibility).
+
+## Project-owned Cursor agent guidance — 2026-05-13
+**Context:** Agent behavior lived in global Cursor User Rules and a legacy `.cursorrules` file, so teammates did not inherit the same instructions and guidance could load twice.
+**Decision:** Store shared agent instructions in `.cursor/rules/` and `.cursor/skills/`; keep incident and pattern data in `docs/mistakes.md` and `docs/skills.md`; use one small always-on `core.mdc` plus scoped or intelligent rules elsewhere.
+**Alternatives considered:** `AGENTS.md` only; keeping User Rules as the source of truth; many always-on rule files duplicating User Rules verbatim.
+**Consequences:** Contributors get consistent Agent behavior from git; User Rules should stay empty or limited to personal preferences outside this repo; other repos can copy the portable kit described in `.cursor/README.md`.

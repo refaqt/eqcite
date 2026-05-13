@@ -56,6 +56,26 @@ def smoke_load_simulation_with_config() -> None:
         assert "F_x" in d and "F_y" in d
         assert "x_tool" in d and "y_tool" in d
 
+    exp_cfg2 = dict(exp_cfg)
+    exp_cfg2["sensor_catalog"] = [
+        {"id": "s0", "model": "", "manufacturer": "", "sensitivity_vs_per_v": 1.0, "unit": "m/s²"}
+    ]
+    exp_cfg2["mapping"] = []
+    exp_cfg2["expressions"] = []
+    exp_cfg2["simulation_signal_map"] = {
+        "hammer_x": "F_x",
+        "hammer_y": "F_y",
+        "resp_x": "x_tool",
+        "resp_y": "y_tool",
+    }
+    exp_cfg2["analysis_io"] = {
+        "x": {"input": "hammer_x", "output": "resp_x"},
+        "y": {"input": "hammer_y", "output": "resp_y"},
+    }
+    directional2 = load_data.load_directional_data(exp_cfg2, {})
+    d2 = directional2["x"][0]
+    assert "hammer_x" in d2 and "resp_x" in d2
+
     # Validate semantic: config damping is damping ratio ζ (dimensionless).
     from . import simulate_system
 

@@ -315,18 +315,57 @@ def apply_lowpass_filter_bessel(
 # Window utilities
 # ---------------------------------------------------------------------------
 
+_DEFAULT_RC_ROLLOFF_SECONDS = 0.01875
+_DEFAULT_RC_MAX_START_SECONDS = -0.03125
+_DEFAULT_RC_MAX_END_SECONDS = 0.08125
+
+
+def normalize_raised_cosine_window_params(params: Dict[str, Any]) -> Dict[str, float]:
+    """
+    Return peak-relative raised-cosine shape parameters, migrating legacy pre/post/beta when needed.
+    """
+    p = dict(params or {})
+    new_keys = (
+        "window_rolloff_seconds",
+        "window_max_start_seconds",
+        "window_max_end_seconds",
+    )
+    if all(k in p for k in new_keys):
+        rolloff = float(p["window_rolloff_seconds"])
+        max_start = float(p["window_max_start_seconds"])
+        max_end = float(p["window_max_end_seconds"])
+    elif any(k in p for k in ("window_pre_seconds", "window_post_seconds", "window_beta")):
+        pre = max(0.0, float(p.get("window_pre_seconds", 0.05)))
+        post = max(0.0, float(p.get("window_post_seconds", 0.1)))
+        beta = min(max(float(p.get("window_beta", 0.25)), 0.0), 1.0)
+        total = pre + post
+        rolloff = beta * total / 2.0
+        max_start = -pre + rolloff
+        max_end = post - rolloff
+    else:
+        rolloff = float(p.get("window_rolloff_seconds", _DEFAULT_RC_ROLLOFF_SECONDS))
+        max_start = float(p.get("window_max_start_seconds", _DEFAULT_RC_MAX_START_SECONDS))
+        max_end = float(p.get("window_max_end_seconds", _DEFAULT_RC_MAX_END_SECONDS))
+
+    return {
+        "window_rolloff_seconds": rolloff,
+        "window_max_start_seconds": max_start,
+        "window_max_end_seconds": max_end,
+    }
+
+
 def create_raised_cosine_window(
     time: np.ndarray,
     force_signal: np.ndarray,
-    pre_seconds: float,
-    post_seconds: float,
-    beta: float,
+    params: Dict[str, Any],
     dt: float,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
-    Build a raised cosine (Tukey) window around the dominant force peak.
+    Build a raised cosine window around the dominant force peak.
+
+    Shape parameters are peak-relative seconds: rolloff duration, plateau start, and plateau end.
     """
-    time = np.asarray(time)
+    time = np.asarray(time, dtype=float)
     force_signal = np.asarray(force_signal)
 
     if time.shape != force_signal.shape:
@@ -336,55 +375,61 @@ def create_raised_cosine_window(
     if not np.isfinite(dt) or dt <= 0:
         raise ValueError("Non-positive or non-finite sample interval detected")
 
+    shape = normalize_raised_cosine_window_params(params)
+    rolloff = float(shape["window_rolloff_seconds"])
+    max_start = float(shape["window_max_start_seconds"])
+    max_end = float(shape["window_max_end_seconds"])
+
+    if rolloff <= 0:
+        raise ValueError("window_rolloff_seconds must be positive")
+    if max_end <= max_start:
+        raise ValueError("window_max_end_seconds must be greater than window_max_start_seconds")
+
     peak_idx = int(np.argmax(np.abs(force_signal)))
-    peak_time = time[peak_idx]
+    peak_time = float(time[peak_idx])
 
-    pre_seconds = max(0.0, float(pre_seconds))
-    post_seconds = max(0.0, float(post_seconds))
-    beta = float(beta)
-    beta = min(max(beta, 0.0), 1.0)
+    plateau_start = peak_time + max_start
+    plateau_end = peak_time + max_end
+    support_start = plateau_start - rolloff
+    support_end = plateau_end + rolloff
 
-    start_time = max(peak_time - pre_seconds, time[0])
-    end_time = min(peak_time + post_seconds, time[-1])
-    if end_time <= start_time:
-        window = np.zeros_like(time, dtype=float)
-        window[peak_idx] = 1.0
-        return window, {
-            "peak_time": peak_time,
-            "start_time": peak_time,
-            "end_time": peak_time,
-            "peak_index": peak_idx,
-            "start_index": peak_idx,
-            "end_index": peak_idx + 1,
-        }
-
-    start_idx = int(np.searchsorted(time, start_time, side="left"))
-    end_idx = int(np.searchsorted(time, end_time, side="right"))
-    if end_idx <= start_idx + 1:
-        window = np.zeros_like(time, dtype=float)
-        window[peak_idx] = 1.0
-        return window, {
-            "peak_time": peak_time,
-            "start_time": peak_time,
-            "end_time": peak_time,
-            "peak_index": peak_idx,
-            "start_index": peak_idx,
-            "end_index": peak_idx + 1,
-        }
-
-    segment_length = end_idx - start_idx
-    tukey_segment = signal.windows.tukey(segment_length, alpha=beta, sym=False)
+    support_start = max(support_start, float(time[0]))
+    support_end = min(support_end, float(time[-1]))
+    if support_end <= support_start:
+        raise ValueError("Raised-cosine window support is empty after clamping to the time vector")
 
     window = np.zeros_like(time, dtype=float)
-    window[start_idx:end_idx] = tukey_segment
+    t = time
+    rising = (t >= support_start) & (t < plateau_start)
+    if np.any(rising):
+        phase = np.pi * (t[rising] - support_start) / rolloff
+        window[rising] = 0.5 * (1.0 - np.cos(phase))
+
+    flat = (t >= plateau_start) & (t <= plateau_end)
+    window[flat] = 1.0
+
+    falling = (t > plateau_end) & (t <= support_end)
+    if np.any(falling):
+        phase = np.pi * (support_end - t[falling]) / rolloff
+        window[falling] = 0.5 * (1.0 - np.cos(phase))
+
+    start_idx = int(np.searchsorted(time, support_start, side="left"))
+    end_idx = int(np.searchsorted(time, support_end, side="right"))
+    start_idx = max(0, min(start_idx, len(time) - 1))
+    end_idx = max(start_idx + 1, min(end_idx, len(time)))
 
     metadata = {
         "peak_time": peak_time,
-        "start_time": time[start_idx],
-        "end_time": time[end_idx - 1],
+        "start_time": float(time[start_idx]),
+        "end_time": float(time[end_idx - 1]),
+        "plateau_start_time": float(plateau_start),
+        "plateau_end_time": float(plateau_end),
         "peak_index": peak_idx,
         "start_index": start_idx,
         "end_index": end_idx,
+        "window_rolloff_seconds": rolloff,
+        "window_max_start_seconds": max_start,
+        "window_max_end_seconds": max_end,
     }
     return window, metadata
 
@@ -435,14 +480,7 @@ def create_window(
     win_type = (window_type or "hann").lower()
 
     if win_type == "raised-cosine":
-        return create_raised_cosine_window(
-            time,
-            force,
-            params.get("window_pre_seconds", 0.05),
-            params.get("window_post_seconds", 0.1),
-            params.get("window_beta", 0.25),
-            dt,
-        )
+        return create_raised_cosine_window(time, force, params, dt)
     if win_type == "constant":
         w = create_constant_window(time)
         return w, {

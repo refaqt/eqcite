@@ -1,0 +1,14 @@
+---
+description: Core agent workflow for this repository
+alwaysApply: true
+---
+
+# Core
+
+- Follow user, tool, system, and skill instructions completely; use real shell and tools; do not give up after one failure.
+- At the start of each task, read `docs/mistakes.md` and briefly state which prevention rules apply before editing.
+- Before non-trivial work, read `docs/architecture.md`. Before new solutions, check `docs/skills.md` and use the `project-skills-md` skill when maintaining patterns.
+- If any required `docs/` file is missing, create it from `.cursor/bootstrap/docs/` with a brief initial entry (empty is acceptable; missing is not).
+- Maintain living documentation during work, not only at the end; follow the `living-docs` rule and `mistake-log` skill when they apply.
+- Read the existing codebase before writing; prefer editing existing files and patterns; when in doubt, do less and ask.
+- Keep diffs focused: match local style, no drive-by refactors, and no unrelated markdown outside the `docs/` convention files.
