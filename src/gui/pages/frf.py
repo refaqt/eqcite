@@ -673,10 +673,9 @@ class FrfFilteringPage(QWidget):
         win_form.addRow(QLabel("Output window type"), self._win_out_type)
 
         self._win_hann_width = QLineEdit("0.05")
-        self._win_pre = QLineEdit("0.05")
-        self._win_post = QLineEdit("0.1")
-        self._win_beta = QLineEdit("0.25")
-        self._win_rolloff = QLineEdit("0.005")
+        self._win_rolloff = QLineEdit("0.01875")
+        self._win_max_start = QLineEdit("-0.03125")
+        self._win_max_end = QLineEdit("0.08125")
         self._win_trigger_pct = QLineEdit("0.1")
         self._win_low_pct = QLineEdit("0.001")
         self._win_sliding = QLineEdit("200")
@@ -691,10 +690,9 @@ class FrfFilteringPage(QWidget):
             self._win_rows[key] = (lab, w)
 
         _add_row("window_hann_width", "window_hann_width (s)", self._win_hann_width)
-        _add_row("window_pre_seconds", "window_pre_seconds (s)", self._win_pre)
-        _add_row("window_post_seconds", "window_post_seconds (s)", self._win_post)
-        _add_row("window_beta", "window_beta", self._win_beta)
-        _add_row("window_rolloff_seconds", "window_rolloff_seconds (s)", self._win_rolloff)
+        _add_row("window_rolloff_seconds", "Rolloff time (s)", self._win_rolloff)
+        _add_row("window_max_start_seconds", "Window max start (s, vs peak)", self._win_max_start)
+        _add_row("window_max_end_seconds", "Window max end (s, vs peak)", self._win_max_end)
         _add_row("window_trigger_percent", "window_trigger_percent", self._win_trigger_pct)
         _add_row("window_low_percent", "window_low_percent", self._win_low_pct)
         _add_row("window_sliding_size", "window_sliding_size (samples)", self._win_sliding)
@@ -743,10 +741,9 @@ class FrfFilteringPage(QWidget):
             self._bias_window_size,
             self._wiener_mysize,
             self._win_hann_width,
-            self._win_pre,
-            self._win_post,
-            self._win_beta,
             self._win_rolloff,
+            self._win_max_start,
+            self._win_max_end,
             self._win_trigger_pct,
             self._win_low_pct,
             self._win_sliding,
@@ -793,7 +790,11 @@ class FrfFilteringPage(QWidget):
         if "exponential" in active:
             show |= {"window_decay_db"}
         if "raised-cosine" in active:
-            show |= {"window_pre_seconds", "window_post_seconds", "window_beta"}
+            show |= {
+                "window_rolloff_seconds",
+                "window_max_start_seconds",
+                "window_max_end_seconds",
+            }
         if "signal-based" in active:
             show |= {
                 "window_rolloff_seconds",
@@ -857,10 +858,9 @@ class FrfFilteringPage(QWidget):
                 "input_window_type": str(self._win_in_type.currentData() or "hann"),
                 "output_window_type": str(self._win_out_type.currentData() or "exponential"),
                 "window_hann_width": f(self._win_hann_width.text()),
-                "window_pre_seconds": f(self._win_pre.text()),
-                "window_post_seconds": f(self._win_post.text()),
-                "window_beta": f(self._win_beta.text()),
                 "window_rolloff_seconds": f(self._win_rolloff.text()),
+                "window_max_start_seconds": f(self._win_max_start.text()),
+                "window_max_end_seconds": f(self._win_max_end.text()),
                 "window_trigger_percent": f(self._win_trigger_pct.text()),
                 "window_low_percent": f(self._win_low_pct.text()),
                 "window_sliding_size": i(self._win_sliding.text()),
@@ -905,12 +905,18 @@ class FrfFilteringPage(QWidget):
             _set_combo(self._win_in_type, str(win.get("input_window_type") or "hann"))
             _set_combo(self._win_out_type, str(win.get("output_window_type") or "exponential"))
 
+            win = dict(win)
+            if any(
+                k in win
+                for k in ("window_pre_seconds", "window_post_seconds", "window_beta")
+            ):
+                win.update(signal_processing.normalize_raised_cosine_window_params(win))
+
             mapping = {
                 "window_hann_width": self._win_hann_width,
-                "window_pre_seconds": self._win_pre,
-                "window_post_seconds": self._win_post,
-                "window_beta": self._win_beta,
                 "window_rolloff_seconds": self._win_rolloff,
+                "window_max_start_seconds": self._win_max_start,
+                "window_max_end_seconds": self._win_max_end,
                 "window_trigger_percent": self._win_trigger_pct,
                 "window_low_percent": self._win_low_pct,
                 "window_sliding_size": self._win_sliding,

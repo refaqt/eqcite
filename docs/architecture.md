@@ -77,6 +77,7 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 
 - In the FRF GUI (`src/gui/pages/frf.py`), the sidebar page **Experiment configuration** defines sensors, mapping, expressions, and **per-direction** analysis I/O (force-only inputs, acceleration-only outputs). The page **Analysis settings** contains:
   - **Filtering**: bias removal, then optional **Wiener** on force and/or response (independent chains), then windowing (applied before FRF estimation).
+  - **Raised-cosine windowing** (Analysis settings): peak-relative **rolloff time**, **window max start**, and **window max end** define the plateau and cosine ramps; legacy `window_pre_seconds` / `window_post_seconds` / `window_beta` are migrated on load.
   - **Estimation**: FRF estimator selection (`H1`, `H2`, `Hv`, default `Hv`), passed into `src/frf_estimation.py::compute_frf_from_signals()` via `params['estimator_type']`.
 
 ## Embedded / firmware
