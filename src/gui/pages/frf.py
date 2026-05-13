@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from ... import experiment_config, expression_eval, frf_estimation, load_data, signal_processing
+from ..analysis_export import export_frf_results, import_frf_results
 from ..plot_widgets import MatplotlibFigureWidget
 
 
@@ -213,6 +214,34 @@ class FrfRootPage(QWidget):
     def export_results(self, analysis_folder: Path) -> dict:
         return self._page_results.export_results(analysis_folder)
 
+    def get_sidebar_index(self) -> int:
+        return int(self._menu.currentRow())
+
+    def set_sidebar_index(self, idx: int) -> None:
+        if 0 <= int(idx) < self._stack.count():
+            self._menu.setCurrentRow(int(idx))
+
+    def build_session_snapshot(self) -> Dict[str, Any]:
+        self._page_sensor.sync_from_widgets()
+        return {
+            "experiment_cfg": self.build_experiment_cfg(),
+            "gui_state": {
+                "sidebar_index": self.get_sidebar_index(),
+                "experiment_tab_index": self._page_sensor.get_tab_index(),
+                "frf_results": self._page_results.build_gui_state(),
+            },
+        }
+
+    def apply_session_snapshot(self, experiment_cfg: Dict[str, Any], gui_state: Dict[str, Any]) -> None:
+        self.apply_experiment_cfg(dict(experiment_cfg or {}))
+        gui_state = dict(gui_state or {})
+        self.set_sidebar_index(int(gui_state.get("sidebar_index", 0)))
+        self._page_sensor.set_tab_index(int(gui_state.get("experiment_tab_index", 0)))
+        self._page_results.apply_gui_state(dict(gui_state.get("frf_results", {}) or {}))
+
+    def hydrate_results_from_manifest(self, analysis_folder: Path, manifest: Dict[str, Any]) -> None:
+        self._page_results.hydrate_from_manifest(analysis_folder, manifest)
+
     def apply_default_filtering(self, filtering_cfg: Dict[str, Any]) -> None:
         self._page_filtering.apply_filtering_cfg(dict(filtering_cfg or {}))
 
@@ -227,6 +256,7 @@ class FrfRootPage(QWidget):
 
     def apply_experiment_cfg(self, cfg: Dict[str, Any]) -> None:
         cfg = dict(cfg or {})
+        self._page_input.apply_from_experiment_cfg(cfg)
         frag = {
             k: cfg[k]
             for k in (
@@ -384,6 +414,28 @@ class FrfInputPage(QWidget):
     def set_file_paths(self, x_paths: List[str], y_paths: List[str]) -> None:
         self._set_list_items(self._x_list, x_paths or [])
         self._set_list_items(self._y_list, y_paths or [])
+        self._sync_model_from_ui()
+
+    def apply_from_experiment_cfg(self, cfg: Dict[str, Any]) -> None:
+        self._model.data_source = str(cfg.get("data_source") or "file")
+        self._model.file_paths_x = list(cfg.get("file_paths_x") or [])
+        self._model.file_paths_y = list(cfg.get("file_paths_y") or [])
+        self._model.simulation = dict(cfg.get("simulation") or {})
+        self._rb_sim.setChecked(self._model.data_source == "simulation")
+        self._rb_file.setChecked(self._model.data_source != "simulation")
+        self._on_mode_changed()
+        self._set_list_items(self._x_list, list(self._model.file_paths_x or []))
+        self._set_list_items(self._y_list, list(self._model.file_paths_y or []))
+        sim = dict(self._model.simulation or {})
+        model = dict(sim.get("model") or {})
+        hammer = dict(sim.get("hammer") or {})
+        self._sim_fs.setText(str(sim.get("fs", self._sim_fs.text())))
+        self._sim_T.setText(str(sim.get("T", self._sim_T.text())))
+        self._sim_mass.setText(str(model.get("mass", self._sim_mass.text())))
+        self._sim_stiff.setText(str(model.get("stiffness", self._sim_stiff.text())))
+        self._sim_damp.setText(str(model.get("damping", self._sim_damp.text())))
+        self._sim_hammer_force.setText(str(hammer.get("force", self._sim_hammer_force.text())))
+        self._sim_hammer_bw.setText(str(hammer.get("bandwidth_hz", self._sim_hammer_bw.text())))
         self._sync_model_from_ui()
 
     def _browse_into_list(self, list_widget: QListWidget) -> None:
@@ -1373,112 +1425,118 @@ class FrfResultsPage(QWidget):
         self._time_steps_mode = mode
         self._redraw_tab("time_steps")
 
-    def export_results(self, analysis_folder: Path) -> dict:
-        """
-        Export the most recently computed FRF results into:
-          results/figures/*.png
-          results/tables/*.csv
-          results/logs/export_log.json
-        """
-        analysis_folder = Path(analysis_folder).resolve()
-        fig_dir = analysis_folder / "results" / "figures"
-        tab_dir = analysis_folder / "results" / "tables"
-        log_dir = analysis_folder / "results" / "logs"
-        fig_dir.mkdir(parents=True, exist_ok=True)
-        tab_dir.mkdir(parents=True, exist_ok=True)
-        log_dir.mkdir(parents=True, exist_ok=True)
-
-        exported: Dict[str, Any] = {"figures": [], "tables": [], "log": None, "warnings": []}
-
-        def _write_csv(path: Path, f_hz: np.ndarray, H: np.ndarray) -> None:
-            f_hz = np.asarray(f_hz, dtype=float)
-            H = np.asarray(H, dtype=complex)
-            mag = np.abs(H)
-            phase_deg = np.unwrap(np.angle(H)) * 180.0 / np.pi
-            with path.open("w", newline="", encoding="utf-8") as fp:
-                w = csv.writer(fp)
-                w.writerow(["frequency_hz", "real", "imag", "magnitude", "phase_deg"])
-                for i in range(len(f_hz)):
-                    w.writerow(
-                        [
-                            float(f_hz[i]),
-                            float(np.real(H[i])),
-                            float(np.imag(H[i])),
-                            float(mag[i]),
-                            float(phase_deg[i]),
-                        ]
-                    )
-
-        # Always export a log (even if no results were generated yet).
-        now = datetime.now(timezone.utc).isoformat()
-        log_payload: Dict[str, Any] = {
-            "timestamp_utc": now,
-            "meta": dict(self._last_run_meta or {}),
-            "exported": {"figures": [], "tables": []},
-            "warnings": [],
+    def build_gui_state(self) -> Dict[str, Any]:
+        return {
+            "results_tab_index": int(self._tabs.currentIndex()),
+            "time_steps_mode": str(self._time_steps_mode),
+            "tab_sel_idx": {k: list(v) for k, v in (self._tab_sel_idx or {}).items()},
+            "average_checked": {
+                k: bool(cb.isChecked()) for k, cb in (self._tab_average_checks or {}).items()
+            },
         }
 
-        # Figures (export current tabs, even if no data traces)
-        try:
-            p1 = fig_dir / "bode_displacement_force.png"
-            self._tab_bode_disp.figure.savefig(p1, dpi=200, bbox_inches="tight")
-            exported["figures"].append(str(p1))
-            log_payload["exported"]["figures"].append(str(p1))
-        except Exception as e:
-            msg = f"Failed to export bode_displacement_force.png: {e}"
-            exported["warnings"].append(msg)
-            log_payload["warnings"].append(msg)
+    def apply_gui_state(self, gui_state: Dict[str, Any]) -> None:
+        gui_state = dict(gui_state or {})
+        tab_sel = dict(gui_state.get("tab_sel_idx", {}) or {})
+        for tab_id, (x_cb, y_cb) in (self._tab_selectors or {}).items():
+            idxs = tab_sel.get(tab_id, [0, 0])
+            x_idx = int(idxs[0]) if len(idxs) > 0 else 0
+            y_idx = int(idxs[1]) if len(idxs) > 1 else 0
+            self._tab_sel_idx[tab_id] = (x_idx, y_idx)
+            if x_cb.count() > 0:
+                x_cb.setCurrentIndex(min(max(x_idx, 0), x_cb.count() - 1))
+            if y_cb.count() > 0:
+                y_cb.setCurrentIndex(min(max(y_idx, 0), y_cb.count() - 1))
+        for tab_id, checked in (gui_state.get("average_checked", {}) or {}).items():
+            cb = self._tab_average_checks.get(str(tab_id))
+            if cb is not None:
+                cb.setChecked(bool(checked))
+        mode = str(gui_state.get("time_steps_mode") or self._time_steps_mode)
+        self._time_steps_mode = mode
+        self._refresh_time_steps_controls()
+        ridx = int(gui_state.get("results_tab_index", 0))
+        if 0 <= ridx < self._tabs.count():
+            self._tabs.setCurrentIndex(ridx)
 
-        try:
-            p2 = fig_dir / "bode_acceleration_force.png"
-            self._tab_bode_accel.figure.savefig(p2, dpi=200, bbox_inches="tight")
-            exported["figures"].append(str(p2))
-            log_payload["exported"]["figures"].append(str(p2))
-        except Exception as e:
-            msg = f"Failed to export bode_acceleration_force.png: {e}"
-            exported["warnings"].append(msg)
-            log_payload["warnings"].append(msg)
+    @staticmethod
+    def _measurement_from_hydrated(entry: Dict[str, Any]) -> _DirectionalMeasurement:
+        direction = str(entry.get("direction") or "x")
+        time_s = np.asarray(entry["time_s"], dtype=float)
+        dt = float(time_s[1] - time_s[0]) if len(time_s) > 1 else 1.0
+        u_steps = [_SignalStep(str(n), np.asarray(y, dtype=float)) for n, y in entry.get("u_steps", [])]
+        r_steps = [_SignalStep(str(n), np.asarray(y, dtype=float)) for n, y in entry.get("resp_steps", [])]
+        f_hz, Hc = entry["compliance"]
+        _, Ha = entry["accelerance"]
+        proc = _DirectionalProcessing(
+            direction=direction,
+            time=time_s,
+            fs_hz=1.0 / dt if dt else 1.0,
+            u_steps=u_steps,
+            resp_steps=r_steps,
+            window=None,
+            f_hz=np.asarray(f_hz, dtype=float),
+            psd_u=np.asarray(entry.get("psd_u", []), dtype=float),
+            coherence_uy=np.asarray(entry.get("coherence", []), dtype=float),
+            csd_ur=np.asarray(entry.get("csd_ur", []), dtype=complex),
+            psd_r=np.asarray(entry.get("psd_r", []), dtype=float),
+            fft_f_hz=np.asarray(entry.get("fft_f_hz", []), dtype=float),
+            fft_u_mag=dict(entry.get("fft_u_mag", {}) or {}),
+            fft_resp_mag=dict(entry.get("fft_resp_mag", {}) or {}),
+            fft_u_complex=dict(entry.get("fft_u_complex", {}) or {}),
+            fft_resp_complex=dict(entry.get("fft_resp_complex", {}) or {}),
+            io_input_name=str(entry.get("io_input_name") or ""),
+            io_output_name=str(entry.get("io_output_name") or ""),
+        )
+        return _DirectionalMeasurement(
+            direction=direction,
+            filepath=entry.get("filepath"),
+            raw_channels=None,
+            proc=proc,
+            compliance=(np.asarray(f_hz, dtype=float), np.asarray(Hc, dtype=complex)),
+            accelerance=(np.asarray(f_hz, dtype=float), np.asarray(Ha, dtype=complex)),
+        )
 
-        # Tables
-        def _export_dir(res: _DirectionalFrfResult) -> None:
-            d = res.direction.lower()
-            p_comp = tab_dir / f"frf_{d}_compliance.csv"
-            p_acc = tab_dir / f"frf_{d}_accelerance.csv"
-            _write_csv(p_comp, res.compliance[0], res.compliance[1])
-            _write_csv(p_acc, res.accelerance[0], res.accelerance[1])
-            exported["tables"].extend([str(p_comp), str(p_acc)])
-            log_payload["exported"]["tables"].extend([str(p_comp), str(p_acc)])
+    def hydrate_from_manifest(self, analysis_folder: Path, manifest: Dict[str, Any]) -> None:
+        if not manifest:
+            return
+        bundle = import_frf_results(Path(analysis_folder), dict(manifest or {}))
+        self._x_measurements = [self._measurement_from_hydrated(e) for e in bundle.get("x", [])]
+        self._y_measurements = [self._measurement_from_hydrated(e) for e in bundle.get("y", [])]
+        if self._x_measurements:
+            self._last_x = _DirectionalFrfResult(
+                direction="x",
+                compliance=self._x_measurements[0].compliance,
+                accelerance=self._x_measurements[0].accelerance,
+            )
+            self._last_proc_x = self._x_measurements[0].proc
+        if self._y_measurements:
+            self._last_y = _DirectionalFrfResult(
+                direction="y",
+                compliance=self._y_measurements[0].compliance,
+                accelerance=self._y_measurements[0].accelerance,
+            )
+            self._last_proc_y = self._y_measurements[0].proc
+        self._refresh_resolved_io_label()
+        self._populate_measurement_dropdowns()
+        for tid in [
+            "raw_mosaic",
+            "time_steps",
+            "fft_mag",
+            "coherence",
+            "force_psd",
+            "real_frf",
+            "bode_disp",
+            "bode_accel",
+        ]:
+            self._redraw_tab(tid)
 
-        if self._last_x is not None:
-            try:
-                _export_dir(self._last_x)
-            except Exception as e:
-                msg = f"Failed to export X tables: {e}"
-                exported["warnings"].append(msg)
-                log_payload["warnings"].append(msg)
-        else:
-            msg = "No X-direction FRF results available to export (run Generate results first)."
-            exported["warnings"].append(msg)
-            log_payload["warnings"].append(msg)
-
-        if self._last_y is not None:
-            try:
-                _export_dir(self._last_y)
-            except Exception as e:
-                msg = f"Failed to export Y tables: {e}"
-                exported["warnings"].append(msg)
-                log_payload["warnings"].append(msg)
-        else:
-            msg = "No Y-direction FRF results available to export (run Generate results first)."
-            exported["warnings"].append(msg)
-            log_payload["warnings"].append(msg)
-
-        # Log file
-        log_path = log_dir / "export_log.json"
-        log_path.write_text(json.dumps(log_payload, indent=2), encoding="utf-8")
-        exported["log"] = str(log_path)
-
-        return exported
+    def export_results(self, analysis_folder: Path) -> dict:
+        return export_frf_results(
+            Path(analysis_folder),
+            x_measurements=self._x_measurements,
+            y_measurements=self._y_measurements,
+            meta=dict(self._last_run_meta or {}),
+        )
 
     def _compute_directional(
         self,

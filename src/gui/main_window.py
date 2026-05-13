@@ -6,6 +6,7 @@ from pathlib import Path
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFileDialog,
+    QInputDialog,
     QMainWindow,
     QMessageBox,
     QTabWidget,
@@ -14,9 +15,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .pages.frf import FrfRootPage
+from .analysis_workspace import AnalysisTab, AnalysisWorkspace
 from .pages.settings import SettingsRootPage
-from .pages.stability import StabilityRootPage
 from .persistence import (
     AppSettings,
     load_analysis_json,
@@ -25,9 +25,8 @@ from .persistence import (
     resolve_default_save_dir,
     save_analysis_folder,
     save_app_settings,
-    suggest_analysis_folder_name,
 )
-from .state import AnalysisState
+from .state import AnalysisState, AnalysisType
 
 
 class MainWindow(QMainWindow):
@@ -39,86 +38,126 @@ class MainWindow(QMainWindow):
         self._repo_root = Path(__file__).resolve().parents[2]
         self._app_settings: AppSettings = load_app_settings(self._repo_root)
         self._restoring_settings = False
-        self._state = AnalysisState(
-            analysis_type="frf",
-            sensitivities_path=self._repo_root / "config" / "sensitivities.json",
-            experiment_cfg=self._load_default_experiment_cfg(),
-        )
 
         self._tabs = QTabWidget()
-        self._frf_root = FrfRootPage()
-        self._stab_root = StabilityRootPage()
+        self._frf_workspace = AnalysisWorkspace("frf")
+        self._stab_workspace = AnalysisWorkspace("stability_measurement")
         self._settings_root = SettingsRootPage()
-        self._tabs.addTab(self._frf_root, "FRF")
-        self._tabs.addTab(self._stab_root, "Stability")
-        self._tabs.addTab(self._settings_root, "Settings")
+        self._settings_tab_index: int | None = None
+
+        self._tabs.addTab(self._frf_workspace, "FRF")
+        self._tabs.addTab(self._stab_workspace, "Stability")
+        self._settings_tab_index = self._tabs.addTab(self._settings_root, "Settings")
 
         central = QWidget()
         central_layout = QVBoxLayout(central)
         central_layout.setContentsMargins(10, 10, 10, 10)
         central_layout.setSpacing(10)
         central_layout.addWidget(self._tabs, 1)
-
         self.setCentralWidget(central)
         self._build_toolbar()
 
-        self._tabs.currentChanged.connect(self._on_tab_changed)
+        load_dir = str(resolve_default_load_dir(self._repo_root, self._app_settings))
+        self._frf_workspace.set_default_load_dir(load_dir)
+        self._stab_workspace.set_default_load_dir(load_dir)
+        self._wire_workspace(self._frf_workspace)
+        self._wire_workspace(self._stab_workspace)
 
         self._settings_root.default_save_dir_changed.connect(self._on_default_save_dir_changed)
         self._settings_root.default_load_dir_changed.connect(self._on_default_load_dir_changed)
         self._settings_root.set_default_save_dir(str(self._app_settings.default_save_dir))
         self._settings_root.set_default_load_dir(str(self._app_settings.default_load_dir))
-        self._frf_root.set_default_load_dir(str(resolve_default_load_dir(self._repo_root, self._app_settings)))
-        self._stab_root.set_default_load_dir(str(resolve_default_load_dir(self._repo_root, self._app_settings)))
 
-        self._frf_root.default_experiment_config_save_requested.connect(self._on_save_default_experiment_config)
-        self._frf_root.default_filtering_save_requested.connect(self._on_save_default_frf_filtering)
-        self._frf_root.file_paths_changed.connect(self._on_frf_file_paths_changed)
-        self._stab_root.file_path_changed.connect(self._on_stability_file_path_changed)
-        self._apply_default_sensor_config_if_present()
-        self._apply_default_frf_filtering_if_present()
-        self._restore_last_file_paths()
+        self._add_analysis_tab(self._frf_workspace, apply_defaults=True)
+        self._add_analysis_tab(self._stab_workspace, apply_defaults=False)
+        self._restore_last_file_paths(self._stab_workspace.active_tab())
+        self._tabs.setCurrentIndex(0)
 
-    def _restore_last_file_paths(self) -> None:
-        self._restoring_settings = True
-        try:
-            self._frf_root.set_file_paths(
-                list(self._app_settings.last_frf_x_files or []),
-                list(self._app_settings.last_frf_y_files or []),
-            )
-            self._stab_root.set_file_path(self._app_settings.last_stability_file or "")
-        finally:
-            self._restoring_settings = False
+    def _wire_workspace(self, workspace: AnalysisWorkspace) -> None:
+        workspace.file_paths_changed.connect(self._on_frf_file_paths_changed)
+        workspace.file_path_changed.connect(self._on_stability_file_path_changed)
+        workspace.default_experiment_config_save_requested.connect(self._on_save_default_experiment_config)
+        workspace.default_filtering_save_requested.connect(self._on_save_default_frf_filtering)
 
-    def _apply_default_sensor_config_if_present(self) -> None:
+    def _is_settings_tab(self, idx: int) -> bool:
+        return self._settings_tab_index is not None and idx == self._settings_tab_index
+
+    def _workspace_for_type(self, analysis_type: AnalysisType) -> AnalysisWorkspace:
+        if analysis_type == "stability_measurement":
+            return self._stab_workspace
+        return self._frf_workspace
+
+    def _active_workspace(self) -> AnalysisWorkspace | None:
+        idx = self._tabs.currentIndex()
+        if idx < 0 or self._is_settings_tab(idx):
+            return None
+        widget = self._tabs.widget(idx)
+        if isinstance(widget, AnalysisWorkspace):
+            return widget
+        return None
+
+    def _active_analysis_tab(self) -> AnalysisTab | None:
+        workspace = self._active_workspace()
+        if workspace is None:
+            return None
+        return workspace.active_tab()
+
+    def _add_analysis_tab(
+        self,
+        workspace: AnalysisWorkspace,
+        *,
+        apply_defaults: bool = False,
+        select: bool = True,
+    ) -> AnalysisTab:
+        tab = workspace.add_empty_tab(select=select)
+        tab.set_default_load_dir(str(resolve_default_load_dir(self._repo_root, self._app_settings)))
+        if apply_defaults and workspace.analysis_type == "frf":
+            self._apply_frf_defaults_to_tab(tab)
+            self._restore_last_file_paths(tab)
+        if workspace.analysis_type == "stability_measurement":
+            self._restore_last_file_paths(tab)
+        return tab
+
+    def _apply_frf_defaults_to_tab(self, tab: AnalysisTab) -> None:
         if self._app_settings.default_experiment_config:
             try:
-                self._frf_root.apply_default_experiment_config(dict(self._app_settings.default_experiment_config or {}))
+                tab.apply_default_experiment_config(dict(self._app_settings.default_experiment_config or {}))
             except Exception as e:
                 QMessageBox.critical(self, "Failed to apply default experiment config", str(e))
-            return
-        if (
-            not self._app_settings.default_channel_mapping
-            and not self._app_settings.default_sensitivity_mapping
-            and not self._app_settings.default_sensitivities
+        elif (
+            self._app_settings.default_channel_mapping
+            or self._app_settings.default_sensitivity_mapping
+            or self._app_settings.default_sensitivities
         ):
-            return
-        try:
-            self._frf_root.apply_default_sensor_config(
-                channel_mapping=self._app_settings.default_channel_mapping,
-                sensitivity_mapping=self._app_settings.default_sensitivity_mapping,
-                sensitivities=self._app_settings.default_sensitivities,
-            )
-        except Exception as e:
-            QMessageBox.critical(self, "Failed to apply default sensor config", str(e))
+            try:
+                tab.apply_default_sensor_config(
+                    channel_mapping=self._app_settings.default_channel_mapping,
+                    sensitivity_mapping=self._app_settings.default_sensitivity_mapping,
+                    sensitivities=self._app_settings.default_sensitivities,
+                )
+            except Exception as e:
+                QMessageBox.critical(self, "Failed to apply default sensor config", str(e))
 
-    def _apply_default_frf_filtering_if_present(self) -> None:
-        if not (self._app_settings.default_frf_filtering or {}):
+        if self._app_settings.default_frf_filtering:
+            try:
+                tab.apply_default_filtering(dict(self._app_settings.default_frf_filtering or {}))
+            except Exception as e:
+                QMessageBox.critical(self, "Failed to apply default filtering", str(e))
+
+    def _restore_last_file_paths(self, tab: AnalysisTab | None) -> None:
+        if tab is None:
             return
+        self._restoring_settings = True
         try:
-            self._frf_root.apply_default_filtering(dict(self._app_settings.default_frf_filtering or {}))
-        except Exception as e:
-            QMessageBox.critical(self, "Failed to apply default filtering", str(e))
+            if tab.analysis_type == "frf":
+                tab.restore_frf_file_paths(
+                    list(self._app_settings.last_frf_x_files or []),
+                    list(self._app_settings.last_frf_y_files or []),
+                )
+            else:
+                tab.restore_stability_file_path(self._app_settings.last_stability_file or "")
+        finally:
+            self._restoring_settings = False
 
     def _on_save_default_experiment_config(self, cfg: dict) -> None:
         self._app_settings.default_experiment_config = dict(cfg or {})
@@ -154,9 +193,30 @@ class MainWindow(QMainWindow):
         act_save.triggered.connect(self._on_save_analysis)
         tb.addAction(act_save)
 
+        act_add = QAction("Add analysis tab", self)
+        act_add.triggered.connect(self._on_add_analysis_tab)
+        tb.addAction(act_add)
+
         tb.addSeparator()
 
+    def _on_add_analysis_tab(self) -> None:
+        workspace = self._active_workspace()
+        if workspace is None:
+            QMessageBox.warning(self, "Add analysis tab", "Select the FRF or Stability tab first.")
+            return
+        apply_defaults = workspace.analysis_type == "frf"
+        self._add_analysis_tab(workspace, apply_defaults=apply_defaults, select=True)
+
     def _on_load_analysis(self) -> None:
+        workspace = self._active_workspace()
+        if workspace is None:
+            QMessageBox.warning(self, "Load analysis", "Select the FRF or Stability tab first.")
+            return
+        tab = workspace.active_tab()
+        if tab is None:
+            QMessageBox.warning(self, "Load analysis", "Select an analysis tab first.")
+            return
+
         start_dir = str(resolve_default_load_dir(self._repo_root, self._app_settings))
         path_str, _ = QFileDialog.getOpenFileName(
             self,
@@ -171,38 +231,65 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Load analysis failed", str(e))
             return
-        self._apply_state(st)
+
+        target_workspace = self._workspace_for_type(st.analysis_type)
+        if target_workspace is not workspace:
+            self._tabs.setCurrentWidget(target_workspace)
+            workspace = target_workspace
+            tab = workspace.active_tab()
+            if tab is None:
+                tab = self._add_analysis_tab(workspace, apply_defaults=False, select=True)
+
+        try:
+            tab.apply_state(st)
+        except Exception as e:
+            QMessageBox.critical(self, "Load analysis failed", str(e))
+            return
+        workspace.set_tab_title(tab, st.title)
+        QMessageBox.information(self, "Analysis loaded", f"Loaded: {path_str}")
 
     def _on_save_analysis(self) -> None:
-        self._sync_state_from_ui()
+        workspace = self._active_workspace()
+        if workspace is None:
+            QMessageBox.warning(self, "Save analysis", "Select the FRF or Stability tab first.")
+            return
+        tab = workspace.active_tab()
+        if tab is None:
+            QMessageBox.warning(self, "Save analysis", "Select an analysis tab first.")
+            return
+
         default_dir = resolve_default_save_dir(self._repo_root, self._app_settings)
         default_dir.mkdir(parents=True, exist_ok=True)
-        suggested_name = suggest_analysis_folder_name(self._state)
-
-        folder = QFileDialog.getExistingDirectory(
+        parent = QFileDialog.getExistingDirectory(
             self,
-            "Select analysis folder (will create a new subfolder)",
+            "Select folder for this analysis",
             str(default_dir),
         )
-        if not folder:
+        if not parent:
             return
-        chosen = Path(folder) / suggested_name
+
+        name, ok = QInputDialog.getText(self, "Save analysis", "Analysis name:", text=tab.title)
+        if not ok:
+            return
+        name = (name or "Untitled").strip() or "Untitled"
+
+        state = tab.build_state()
+        state.title = name
+        folder = Path(parent) / name
         try:
-            analysis_json = save_analysis_folder(self._repo_root, self._state, chosen)
+            analysis_json = save_analysis_folder(self._repo_root, state, folder)
+            manifest = tab.export_results(folder)
+            state.results_manifest = dict(manifest or {})
+            state.analysis_folder = folder
+            save_analysis_folder(self._repo_root, state, folder)
         except Exception as e:
             QMessageBox.critical(self, "Save analysis failed", str(e))
             return
-        # Export tab-specific artifacts into results/* so the saved analysis folder is self-contained.
-        try:
-            if self._tabs.currentWidget() is self._frf_root and self._state.analysis_folder is not None:
-                self._frf_root.export_results(self._state.analysis_folder)
-        except Exception as e:
-            QMessageBox.critical(self, "Export failed", str(e))
-            return
-        QMessageBox.information(self, "Analysis saved", f"Saved: {analysis_json}")
 
-    def _on_tab_changed(self, idx: int) -> None:
-        self._state.selected_top_tab = int(idx)
+        tab.set_title(name)
+        tab.set_analysis_folder(folder)
+        workspace.set_tab_title(tab, name)
+        QMessageBox.information(self, "Analysis saved", f"Saved: {analysis_json}")
 
     def _on_default_save_dir_changed(self, path: str) -> None:
         self._app_settings.default_save_dir = Path(path) if path else Path("analyses")
@@ -213,8 +300,9 @@ class MainWindow(QMainWindow):
 
     def _on_default_load_dir_changed(self, path: str) -> None:
         self._app_settings.default_load_dir = Path(path) if path else Path(".")
-        self._frf_root.set_default_load_dir(str(resolve_default_load_dir(self._repo_root, self._app_settings)))
-        self._stab_root.set_default_load_dir(str(resolve_default_load_dir(self._repo_root, self._app_settings)))
+        load_dir = str(resolve_default_load_dir(self._repo_root, self._app_settings))
+        self._frf_workspace.set_default_load_dir(load_dir)
+        self._stab_workspace.set_default_load_dir(load_dir)
         try:
             save_app_settings(self._repo_root, self._app_settings)
         except Exception as e:
@@ -241,10 +329,10 @@ class MainWindow(QMainWindow):
 
         x_list = _coerce(x_paths)
         y_list = _coerce(y_paths)
-
-        if x_list == (self._app_settings.last_frf_x_files or []) and y_list == (self._app_settings.last_frf_y_files or []):
+        if x_list == (self._app_settings.last_frf_x_files or []) and y_list == (
+            self._app_settings.last_frf_y_files or []
+        ):
             return
-
         self._app_settings.last_frf_x_files = x_list
         self._app_settings.last_frf_y_files = y_list
         try:
@@ -270,23 +358,3 @@ class MainWindow(QMainWindow):
             return json.loads(default_cfg_path.read_text(encoding="utf-8"))
         except Exception:
             return {}
-
-    def _sync_state_from_ui(self) -> None:
-        # Keep analysis_type in sync with top-level tab.
-        if self._tabs.currentWidget() is self._stab_root:
-            self._state.analysis_type = "stability_measurement"
-        elif self._tabs.currentWidget() is self._frf_root:
-            self._state.analysis_type = "frf"
-            self._state.experiment_cfg = self._frf_root.build_experiment_cfg()
-
-    def _apply_state(self, st: AnalysisState) -> None:
-        self._state = st
-        # Switch to correct top tab (FRF vs Stability)
-        if st.analysis_type == "stability_measurement":
-            self._tabs.setCurrentWidget(self._stab_root)
-        else:
-            self._tabs.setCurrentWidget(self._frf_root)
-            try:
-                self._frf_root.apply_experiment_cfg(dict(st.experiment_cfg or {}))
-            except Exception as e:
-                QMessageBox.critical(self, "Failed to apply FRF state", str(e))

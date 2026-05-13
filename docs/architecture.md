@@ -48,9 +48,11 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 
 - **Entry point**: `python -m src.gui.app`
 - **Core components**:
-  - `src/gui/main_window.py`: top-level shell (tabs + toolbar)
-  - `src/gui/state.py`: `AnalysisState` (in-memory session state)
+  - `src/gui/main_window.py`: top-level shell (`FRF` | `Stability` | `Settings`, toolbar)
+  - `src/gui/analysis_workspace.py`: nested analysis tabs inside each FRF/Stability mode
+  - `src/gui/state.py`: `AnalysisState` (format version 2 snapshot per tab)
   - `src/gui/persistence.py`: save/load `analysis.json` + app settings (`config/app_settings.json`)
+  - `src/gui/analysis_export.py`: FRF/stability CSV + PNG export and CSV hydrate helpers
   - `src/gui/plot_widgets.py`: Matplotlib embedding for result tabs
 - **FRF filtering / analysis** (`src/gui/pages/frf.py` → `FrfFilteringPage`): **`bias_window_size`** (samples) configures sliding min-variance bias removal and the noise-variance segment; per-axis **filter chains** apply **optional Wiener** to force (`u`) and response before windowing; **`filtering.params.wiener.mysize`** configures SciPy’s local Wiener window only. Both are persisted in the experiment snapshot (`experiment_cfg`), with `bias_window_size` also duplicated at the top level of `analysis.json` for readability.
 - **FRF results tabs** (`src/gui/pages/frf.py`):
@@ -68,10 +70,12 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 - Each results tab has **X and Y measurement dropdowns** labeled by filename, which control which single measurement is displayed for that direction.
 - Frequency-domain tabs include an **Average** checkbox that overlays an additional **black** trace computed by averaging the **complex frequency components first** (then converting to magnitude/phase/real as appropriate).
 - **Persistence**:
-  - An analysis is saved as a **folder** containing `analysis.json` plus `results/figures`, `results/tables`, and `results/logs`.
-  - When saving from the GUI, FRF runs export their current figures + tables into `results/` so the folder is self-contained.
+  - The main window has top-level tabs **FRF**, **Stability**, and **Settings**. Each FRF/Stability tab hosts its own nested analysis tab bar (each titled `Untitled` or the saved analysis name). Toolbar actions **Load analysis**, **Save analysis**, and **Add analysis tab** apply to the active nested tab in the current mode; loading a snapshot whose `analysis_type` differs switches the top-level tab first.
+  - An analysis is saved as a **folder** named by the user under a chosen parent directory. `analysis.json` uses **`format_version: 2`** and stores inputs, GUI chrome, and a **results manifest** (no large arrays in JSON).
+  - Exported artifacts live under `results/tables` and `results/figures`, with **per-measurement** and **`average`** series for each direction when FRF results exist; stability exports under `results/tables/stability` and `results/figures/stability`.
+  - Legacy v1 `analysis.json` files are rejected on load.
   - Global sensitivities (`config/sensitivities.json`) apply only to the **legacy** loading path; the new experiment schema stores sensitivity on each catalog row.
-  - Per-user GUI defaults (folders, **`default_experiment_config`** for the FRF experiment schema, default filtering, last-selected input file paths) are stored in `config/app_settings.json`.
+  - Per-user GUI defaults (folders, **`default_experiment_config`**, default filtering, last-selected input file paths) are stored in `config/app_settings.json`.
 
 ### FRF analysis settings
 

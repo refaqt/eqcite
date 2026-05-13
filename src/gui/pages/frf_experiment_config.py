@@ -168,6 +168,13 @@ class FrfSensorConfigPage(QWidget):
 
         self._reload_all_from_model()
 
+    def get_tab_index(self) -> int:
+        return int(self._tabs.currentIndex())
+
+    def set_tab_index(self, idx: int) -> None:
+        if 0 <= int(idx) < self._tabs.count():
+            self._tabs.setCurrentIndex(int(idx))
+
     def sync_from_widgets(self) -> None:
         self._sync_model_from_widgets()
 

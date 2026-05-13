@@ -22,21 +22,27 @@ python -m src.gui.app
 **When to use:** You want a portable snapshot of an analysis (inputs + GUI state) plus exported outputs (figures/tables).
 **Pattern:**
 ```text
-<analysis-folder>/
-  analysis.json
+<analysis-name>/
+  analysis.json          # format_version: 2
   results/
-    figures/
     tables/
-    logs/
+      time/<direction>/<measurement_key>.csv
+      time/<direction>/average.csv
+      frequency/<direction>/<measurement_key>.csv
+      frequency/<direction>/average.csv
+      stability/...
+    figures/
+      time/<direction>/<measurement_key>/...
+      frequency/<direction>/<measurement_key>/...
+      stability/...
+    logs/export_log.json
 ```
 **Gotchas:**
-- New FRF experiment schema stores per-sensor sensitivity in **`sensor_catalog`** (defaults in `config/app_settings.json` → `default_experiment_config`). Legacy configs still use `config/sensitivities.json`.
-- GUI save exports **FRF** artifacts from the currently computed results:
-  - `results/figures/bode_displacement_force.png`
-  - `results/figures/bode_acceleration_force.png`
-  - `results/tables/frf_x_compliance.csv`, `results/tables/frf_x_accelerance.csv` (and `frf_y_*` if Y was computed)
-  - `results/logs/export_log.json`
-**Last used:** 2026-04-22
+- `analysis.json` must include `format_version: 2`; older snapshots are not loaded.
+- Save prompts for a **parent folder** and **analysis name**; the nested tab title updates to that name.
+- Load overwrites the **active nested tab** in the current FRF or Stability workspace (switching top-level mode when the snapshot type differs).
+- FRF time CSV columns: `time_s`, raw force/response, then processing-step columns; frequency CSV includes coherence plus Bode displacement/force and acceleration/force (real, imag, magnitude, phase).
+**Last used:** 2026-05-13
 
 ---
 

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ... import stability_measurement
+from ..analysis_export import export_stability_results, import_stability_results
 from ..plot_widgets import MatplotlibFigureWidget
 
 
@@ -76,6 +77,38 @@ class StabilityRootPage(QWidget):
 
     def set_file_path(self, path: str) -> None:
         self._page_input.set_file_path(path)
+
+    def get_sidebar_index(self) -> int:
+        return int(self._menu.currentRow())
+
+    def set_sidebar_index(self, idx: int) -> None:
+        if 0 <= int(idx) < self._stack.count():
+            self._menu.setCurrentRow(int(idx))
+
+    def build_session_snapshot(self) -> dict:
+        return {
+            "experiment_cfg": {
+                "analysis_type": "stability_measurement",
+                "file_path": self._model.file_path,
+            },
+            "gui_state": {
+                "sidebar_index": self.get_sidebar_index(),
+                "stability_results": self._page_results.build_gui_state(),
+            },
+        }
+
+    def apply_session_snapshot(self, experiment_cfg: dict, gui_state: dict) -> None:
+        cfg = dict(experiment_cfg or {})
+        self._page_input.set_file_path(str(cfg.get("file_path") or ""))
+        gui_state = dict(gui_state or {})
+        self.set_sidebar_index(int(gui_state.get("sidebar_index", 0)))
+        self._page_results.apply_gui_state(dict(gui_state.get("stability_results", {}) or {}))
+
+    def hydrate_results_from_manifest(self, analysis_folder: Path, manifest: dict) -> None:
+        self._page_results.hydrate_from_manifest(analysis_folder, manifest)
+
+    def export_results(self, analysis_folder: Path) -> dict:
+        return self._page_results.export_results(analysis_folder)
 
     @staticmethod
     def _wrap(widget: QWidget) -> QWidget:
@@ -145,6 +178,7 @@ class StabilityResultsPage(QWidget):
     def __init__(self, model: StabilityInputModel) -> None:
         super().__init__()
         self._model = model
+        self._last_result: Optional[dict] = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -167,12 +201,41 @@ class StabilityResultsPage(QWidget):
         self._tabs.addTab(self._tab_std, "Rolling 2x std")
         layout.addWidget(self._tabs, 1)
 
+    def build_gui_state(self) -> dict:
+        return {"results_tab_index": int(self._tabs.currentIndex())}
+
+    def apply_gui_state(self, gui_state: dict) -> None:
+        idx = int(dict(gui_state or {}).get("results_tab_index", 0))
+        if 0 <= idx < self._tabs.count():
+            self._tabs.setCurrentIndex(idx)
+
+    def hydrate_from_manifest(self, analysis_folder: Path, manifest: dict) -> None:
+        if not manifest:
+            return
+        data = import_stability_results(Path(analysis_folder), dict(manifest or {}))
+        if not data:
+            return
+        self._last_result = data
+        self._plot_spectrogram_tab(self._tab_spec_x, data, axis="x")
+        self._plot_spectrogram_tab(self._tab_spec_y, data, axis="y")
+        self._plot_rolling_std(self._tab_std, data)
+
+    def export_results(self, analysis_folder: Path) -> dict:
+        if not self._last_result:
+            return {"analysis_type": "stability_measurement", "tables": [], "figures": []}
+        return export_stability_results(
+            Path(analysis_folder),
+            result=dict(self._last_result or {}),
+            meta={"file_path": self._model.file_path},
+        )
+
     def _run(self) -> None:
         if not self._model.file_path:
             QMessageBox.warning(self, "Missing input", "Please select a CSV file first.")
             return
         try:
             res = stability_measurement.process_stability_measurement(self._model.file_path, show_plot=False)
+            self._last_result = res
             self._plot_spectrogram_tab(self._tab_spec_x, res, axis="x")
             self._plot_spectrogram_tab(self._tab_spec_y, res, axis="y")
             self._plot_rolling_std(self._tab_std, res)

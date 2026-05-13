@@ -7,6 +7,8 @@ from typing import Any, Dict, Literal, Optional
 
 AnalysisType = Literal["frf", "stability_measurement"]
 
+ANALYSIS_FORMAT_VERSION = 2
+
 
 def _as_path(p: str | None) -> Optional[Path]:
     if not p:
@@ -16,49 +18,49 @@ def _as_path(p: str | None) -> Optional[Path]:
 
 @dataclass
 class AnalysisState:
-    analysis_type: AnalysisType = "frf"
+  """Serializable snapshot for one analysis tab."""
 
-    experiment_title: str = ""
-    experiment_description: str = ""
+  analysis_type: AnalysisType = "frf"
+  title: str = "Untitled"
 
-    # Snapshot of the experiment JSON config that drives the pipelines.
-    experiment_cfg: Dict[str, Any] = field(default_factory=dict)
+  experiment_cfg: Dict[str, Any] = field(default_factory=dict)
+  gui_state: Dict[str, Any] = field(default_factory=dict)
+  results_manifest: Dict[str, Any] = field(default_factory=dict)
 
-    # Global sensitivities live in config/sensitivities.json (not duplicated into analysis folder).
-    sensitivities_path: Optional[Path] = None
+  analysis_folder: Optional[Path] = None
 
-    # GUI-only fields
-    selected_top_tab: int = 0
-    selected_sidebar_index: Dict[str, int] = field(default_factory=dict)  # {"frf": 0, "stability": 0}
+  def to_dict(self) -> Dict[str, Any]:
+    return {
+      "format_version": ANALYSIS_FORMAT_VERSION,
+      "analysis_name": self.title,
+      "analysis_type": self.analysis_type,
+      "experiment_cfg": self.experiment_cfg,
+      "gui": dict(self.gui_state or {}),
+      "results_manifest": dict(self.results_manifest or {}),
+      "analysis_folder": str(self.analysis_folder) if self.analysis_folder else None,
+    }
 
-    # Save/load bookkeeping
-    analysis_folder: Optional[Path] = None
+  @staticmethod
+  def from_dict(d: Dict[str, Any]) -> "AnalysisState":
+    fmt = d.get("format_version")
+    if fmt is None or int(fmt) != ANALYSIS_FORMAT_VERSION:
+      raise ValueError(
+        f"Unsupported analysis format (expected version {ANALYSIS_FORMAT_VERSION})."
+      )
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "analysis_type": self.analysis_type,
-            "experiment_title": self.experiment_title,
-            "experiment_description": self.experiment_description,
-            "experiment_cfg": self.experiment_cfg,
-            "sensitivities_path": str(self.sensitivities_path) if self.sensitivities_path else None,
-            "gui": {
-                "selected_top_tab": self.selected_top_tab,
-                "selected_sidebar_index": self.selected_sidebar_index,
-            },
-            "analysis_folder": str(self.analysis_folder) if self.analysis_folder else None,
-        }
+    gui = d.get("gui", {}) or {}
+    if not isinstance(gui, dict):
+      gui = {}
 
-    @staticmethod
-    def from_dict(d: Dict[str, Any]) -> "AnalysisState":
-        gui = d.get("gui", {}) or {}
-        return AnalysisState(
-            analysis_type=d.get("analysis_type", "frf"),
-            experiment_title=d.get("experiment_title", ""),
-            experiment_description=d.get("experiment_description", ""),
-            experiment_cfg=d.get("experiment_cfg", {}) or {},
-            sensitivities_path=_as_path(d.get("sensitivities_path")),
-            selected_top_tab=int(gui.get("selected_top_tab", 0)),
-            selected_sidebar_index=dict(gui.get("selected_sidebar_index", {}) or {}),
-            analysis_folder=_as_path(d.get("analysis_folder")),
-        )
+    manifest = d.get("results_manifest", {}) or {}
+    if not isinstance(manifest, dict):
+      manifest = {}
 
+    return AnalysisState(
+      analysis_type=d.get("analysis_type", "frf"),
+      title=str(d.get("analysis_name") or "Untitled"),
+      experiment_cfg=dict(d.get("experiment_cfg", {}) or {}),
+      gui_state=dict(gui),
+      results_manifest=dict(manifest),
+      analysis_folder=_as_path(d.get("analysis_folder")),
+    )
