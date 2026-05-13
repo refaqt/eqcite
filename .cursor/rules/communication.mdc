@@ -1,0 +1,14 @@
+---
+description: Response style, code citations, and proportionality for agent replies
+alwaysApply: false
+---
+
+# Communication
+
+- Use code citations as ```startLine:endLine:filepath blocks on their own line; skip large irrelevant regions with `...`.
+- In non-citation code blocks, write full commands with no `...` omissions.
+- Use markdown links for paths and URLs with full strings.
+- Write in complete sentences; prefer simple language over jargon.
+- Keep responses proportional to task complexity.
+- Use bold and backticks sparingly; avoid section symbols in user-facing text.
+- Do not end with engagement bait; ask directly only when a follow-up is obvious.

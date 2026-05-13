@@ -95,3 +95,9 @@ Lightweight log of **non-obvious** technical choices. Add an entry when picking 
 **Decision:** Classify variables from catalog units (`N` vs `m/s²`) and expression AST homogeneity; expose only matching names in the Input/Output tab; validate `analysis_io` on save and at FRF run for the new schema.
 **Alternatives considered:** Letting users pick any variable and soft-warning only; inferring units from expressions with mixed references.
 **Consequences:** Users cannot select an arbitrary voltage trace as “output” without labeling the catalog row as `m/s²` (physical meaning remains user responsibility).
+
+## Project-owned Cursor agent guidance — 2026-05-13
+**Context:** Agent behavior lived in global Cursor User Rules and a legacy `.cursorrules` file, so teammates did not inherit the same instructions and guidance could load twice.
+**Decision:** Store shared agent instructions in `.cursor/rules/` and `.cursor/skills/`; keep incident and pattern data in `docs/mistakes.md` and `docs/skills.md`; use one small always-on `core.mdc` plus scoped or intelligent rules elsewhere.
+**Alternatives considered:** `AGENTS.md` only; keeping User Rules as the source of truth; many always-on rule files duplicating User Rules verbatim.
+**Consequences:** Contributors get consistent Agent behavior from git; User Rules should stay empty or limited to personal preferences outside this repo; other repos can copy the portable kit described in `.cursor/README.md`.

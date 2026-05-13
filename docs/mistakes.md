@@ -1,6 +1,6 @@
 # Mistake log
 
-Log errors, wrong approaches, and **prevention rules** so agents and humans do not repeat them. After each entry, consider copying **Prevention rule** bullets into `.cursorrules` under “Mistake prevention”.
+Log errors, wrong approaches, and **prevention rules** so agents and humans do not repeat them. For repeated issues, promote **Prevention rule** bullets into scoped `.cursor/rules/` (for example `powershell.mdc`); keep the full incident history here.
 
 ## Format (copy per incident)
 

@@ -1,0 +1,10 @@
+---
+description: Python layout and test habits for this repository
+globs: "**/*.py, tests/**"
+alwaysApply: false
+---
+
+# Python
+
+- Run package entry points from the repository root so `config/` and imports resolve.
+- For unit tests, set `PYTHONPATH` to the repo root and use `python -m unittest discover -s tests -p "test*.py" -v` (see `docs/onboarding.md`).

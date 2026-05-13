@@ -1,0 +1,27 @@
+---
+description: Living docs layout, bootstrap, ADRs, and when to update architecture, onboarding, skills, and mistakes
+alwaysApply: false
+---
+
+# Living documentation
+
+## Required files
+
+| File | Purpose | Update when |
+| --- | --- | --- |
+| `docs/architecture.md` | System overview, component map | New component, service, or structural pattern |
+| `docs/decisions.md` | ADRs | Non-trivial technical choice |
+| `docs/skills.md` | Reusable project patterns | A new pattern succeeds or an old one changes |
+| `docs/mistakes.md` | Errors and prevention rules | After every mistake or failed approach |
+| `docs/onboarding.md` | Setup and navigation | Setup steps or project structure change |
+
+## Bootstrap
+
+If a required file is missing, copy the matching stub from `.cursor/bootstrap/docs/` into `docs/` and add a brief initial entry.
+
+## Behaviour
+
+- Update `docs/architecture.md` before closing any task that changes architecture.
+- Add ADRs to `docs/decisions.md` using the format in that file.
+- Keep docs concise, current, and limited to what is implemented.
+- Do not create markdown outside the `docs/` convention unless the user asks.

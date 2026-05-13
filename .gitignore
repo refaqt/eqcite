@@ -16,3 +16,6 @@ __pycache__/
 # Local / ephemeral config (do not commit)
 /config/app_settings.json
 /config/_tmp_sim_config.json
+
+# Local Cursor backups (agent migration exports)
+.cursor/_backup*

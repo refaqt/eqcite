@@ -1,0 +1,11 @@
+---
+description: PowerShell command conventions for this repository on Windows
+globs: "**/*.ps1, **/*.psm1, docs/onboarding.md"
+alwaysApply: false
+---
+
+# PowerShell
+
+- Prefer `;` or separate commands; do not use `&&` as a statement separator.
+- Do not use `cmd.exe`-specific flags such as `cd /d`; use `Set-Location` or `cd` with the path only.
+- See `docs/mistakes.md` for logged incidents and prevention rules.
