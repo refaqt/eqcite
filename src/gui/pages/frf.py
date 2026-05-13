@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Callable, Dict, Optional, Tuple, List
 
 import numpy as np
 from scipy import signal
@@ -154,7 +154,10 @@ class FrfRootPage(QWidget):
         self._page_input = FrfInputPage(self._input_model)
         self._page_sensor = FrfSensorConfigPage(self._input_model)
         self._page_filtering = FrfFilteringPage()
-        self._page_results = FrfResultsPage(self._input_model)
+        self._page_results = FrfResultsPage(
+            self._input_model,
+            sync_experiment_widgets=self._page_sensor.sync_from_widgets,
+        )
 
         self._page_sensor.default_save_requested.connect(self.default_experiment_config_save_requested)
         self._page_input.file_paths_changed.connect(self.file_paths_changed)
@@ -214,6 +217,7 @@ class FrfRootPage(QWidget):
         self._page_filtering.apply_filtering_cfg(dict(filtering_cfg or {}))
 
     def build_experiment_cfg(self) -> Dict[str, Any]:
+        self._page_sensor.sync_from_widgets()
         base = self._page_results._build_experiment_cfg()
         f_cfg = self._page_filtering.build_filtering_cfg()
         base["filtering"] = f_cfg
@@ -923,9 +927,15 @@ class FrfFilteringPage(QWidget):
 
 
 class FrfResultsPage(QWidget):
-    def __init__(self, model: FrfInputModel) -> None:
+    def __init__(
+        self,
+        model: FrfInputModel,
+        *,
+        sync_experiment_widgets: Optional[Callable[[], None]] = None,
+    ) -> None:
         super().__init__()
         self._model = model
+        self._sync_experiment_widgets = sync_experiment_widgets or (lambda: None)
         self._filtering_cfg: Dict[str, Any] = {}
         self._x_measurements: List[_DirectionalMeasurement] = []
         self._y_measurements: List[_DirectionalMeasurement] = []
@@ -951,6 +961,10 @@ class FrfResultsPage(QWidget):
         self._run_btn = QPushButton("Generate results")
         self._run_btn.clicked.connect(self._run)
         layout.addWidget(self._run_btn)
+
+        self._io_resolved_label = QLabel("")
+        self._io_resolved_label.setWordWrap(True)
+        layout.addWidget(self._io_resolved_label)
 
         self._tabs = QTabWidget()
         self._tab_selectors: Dict[str, Tuple[QComboBox, QComboBox]] = {}
@@ -1215,15 +1229,11 @@ class FrfResultsPage(QWidget):
 
     def _run(self) -> None:
         try:
+            self._sync_experiment_widgets()
             exp_cfg = self._build_experiment_cfg()
             self._last_exp_cfg = dict(exp_cfg)
-            repo_root = Path(__file__).resolve().parents[3]
-            if experiment_config.uses_new_experiment_schema(exp_cfg):
-                experiment_config.validate_analysis_io(exp_cfg)
-                sens: Dict[str, float] = {}
-            else:
-                sens = load_data.load_sensitivities(repo_root / "config" / "sensitivities.json")
-            directional = load_data.load_directional_data(exp_cfg, sens)
+            experiment_config.validate_analysis_io(exp_cfg)
+            directional = load_data.load_directional_data(exp_cfg, {})
 
             self._x_measurements = self._compute_measurement_list(directional.get("x"), direction="x")
             self._y_measurements = self._compute_measurement_list(directional.get("y"), direction="y")
@@ -1261,11 +1271,29 @@ class FrfResultsPage(QWidget):
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             }
 
+            self._refresh_resolved_io_label()
             self._populate_measurement_dropdowns()
             for tid in ["raw_mosaic", "time_steps", "fft_mag", "coherence", "force_psd", "real_frf", "bode_disp", "bode_accel"]:
                 self._redraw_tab(tid)
         except Exception as e:
             QMessageBox.critical(self, "FRF run failed", str(e))
+
+    def _refresh_resolved_io_label(self) -> None:
+        parts: List[str] = []
+        if self._last_proc_x is not None:
+            parts.append(
+                f"X input: {self._last_proc_x.io_input_name or '?'}; "
+                f"output: {self._last_proc_x.io_output_name or '?'}"
+            )
+        if self._last_proc_y is not None:
+            parts.append(
+                f"Y input: {self._last_proc_y.io_input_name or '?'}; "
+                f"output: {self._last_proc_y.io_output_name or '?'}"
+            )
+        if parts:
+            self._io_resolved_label.setText("Resolved I/O — " + " | ".join(parts))
+        else:
+            self._io_resolved_label.clear()
 
     def _compute_measurement_list(self, items: object, *, direction: str) -> List[_DirectionalMeasurement]:
         if not isinstance(items, list):
@@ -1458,72 +1486,11 @@ class FrfResultsPage(QWidget):
             return None, None
 
         exp_cfg = dict(getattr(self, "_last_exp_cfg", {}) or {})
-        u_name: str = ""
-        y_name: str = ""
+        u_name, y_name = experiment_config.resolve_analysis_io_names(exp_cfg, direction)
 
-        if experiment_config.uses_new_experiment_schema(exp_cfg):
-            io = exp_cfg.get("analysis_io") or {}
-            block = io.get(direction) if isinstance(io, dict) else None
-            if isinstance(block, dict):
-                u_name = str(block.get("input") or "").strip()
-                y_name = str(block.get("output") or "").strip()
-            if not u_name or not y_name:
-                raise ValueError(
-                    f"Configure Experiment configuration → Input/Output for direction {direction!r} "
-                    f"(missing input and/or output selection)."
-                )
-            kinds = experiment_config.build_variable_kinds(exp_cfg)
-            if kinds.get(u_name) != "force":
-                raise ValueError(
-                    f"analysis_io[{direction}].input must be force-classified; got {u_name!r} ({kinds.get(u_name)!r})"
-                )
-            if kinds.get(y_name) != "acceleration":
-                raise ValueError(
-                    f"analysis_io[{direction}].output must be acceleration-classified; got {y_name!r} ({kinds.get(y_name)!r})"
-                )
-        else:
-
-            def _key_for_family(family: str, direction: str) -> str:
-                family = (family or "").strip().lower()
-                if family == "force":
-                    return "F_x" if direction == "x" else "F_y"
-                if family == "tool":
-                    return "x_tool" if direction == "x" else "y_tool"
-                if family == "spindle":
-                    return "x_spindle" if direction == "x" else "y_spindle"
-                raise ValueError(f"Unknown IO family '{family}' (expected force/tool/spindle)")
-
-            io_sel = (self._filtering_cfg or {}).get("io_selection")
-            if isinstance(io_sel, dict):
-                in_family = str(io_sel.get("input_family") or "force")
-                out_family = str(io_sel.get("output_family") or "tool")
-                u_name = _key_for_family(in_family, direction)
-                y_name = _key_for_family(out_family, direction)
-                if u_name not in data:
-                    raise ValueError(
-                        f"Missing required input signal for {direction}: '{u_name}' (from input_family={in_family})"
-                    )
-                if y_name not in data or data.get(y_name) is None:
-                    raise ValueError(
-                        f"Missing required output signal for {direction}: '{y_name}' (from output_family={out_family})"
-                    )
-            else:
-                u_name = "F_x" if direction == "x" else "F_y"
-                y_name = "x_tool" if direction == "x" else "y_tool"
-
-                if u_name not in data or y_name not in data:
-                    y_name = "x_spindle" if direction == "x" else "y_spindle"
-                if u_name not in data or y_name not in data or data[y_name] is None:
-                    raise ValueError(f"Missing required signals for {direction}: need {u_name} and {y_name}")
-
-        if u_name not in data:
-            raise ValueError(f"Missing required input signal for {direction}: '{u_name}'")
-        if y_name not in data or data.get(y_name) is None:
-            raise ValueError(f"Missing required output signal for {direction}: '{y_name}'")
+        u, y_accel = experiment_config.bind_directional_io_signals(data, u_name, y_name)
 
         time = np.asarray(data["time"])
-        u = np.asarray(data[u_name], dtype=float)
-        y_accel = np.asarray(data[y_name], dtype=float)  # treated as acceleration
 
         params = frf_estimation.get_system_parameters()
         filtering = dict(self._filtering_cfg or {})

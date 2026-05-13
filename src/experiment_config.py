@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Literal, Mapping, Optional, Set, Tuple
 
+import numpy as np
+
 from . import expression_eval
 
 VariableKind = Literal["force", "acceleration", "none"]
@@ -160,6 +162,62 @@ def validate_analysis_io(
             raise ValueError(
                 f"analysis_io[{direction}].output must be an acceleration-classified variable; got {out!r} -> {kinds.get(out)!r}"
             )
+
+
+def resolve_analysis_io_names(
+    experiment_cfg: Mapping[str, Any],
+    direction: str,
+    *,
+    kinds: Optional[Mapping[str, VariableKind]] = None,
+) -> Tuple[str, str]:
+    """Return (input_name, output_name) for one direction from analysis_io (new schema only)."""
+    dir_key = str(direction or "").strip().lower()
+    if dir_key not in {"x", "y"}:
+        raise ValueError(f"direction must be 'x' or 'y'; got {direction!r}")
+    if not uses_new_experiment_schema(experiment_cfg):
+        raise ValueError(
+            "Experiment configuration requires a non-empty sensor_catalog (new schema)."
+        )
+    io = experiment_cfg.get("analysis_io") or {}
+    if not isinstance(io, dict):
+        raise ValueError("analysis_io must be a dict")
+    block = io.get(dir_key)
+    if not isinstance(block, dict):
+        raise ValueError(
+            f"Configure Experiment configuration → Input/Output for direction {dir_key!r}."
+        )
+    inp = str(block.get("input") or "").strip()
+    out = str(block.get("output") or "").strip()
+    if not inp or not out:
+        raise ValueError(
+            f"Configure Experiment configuration → Input/Output for direction {dir_key!r} "
+            f"(missing input and/or output selection)."
+        )
+    kinds_map = kinds or build_variable_kinds(experiment_cfg)
+    if kinds_map.get(inp) != "force":
+        raise ValueError(
+            f"analysis_io[{dir_key}].input must be a force-classified variable; got {inp!r} -> {kinds_map.get(inp)!r}"
+        )
+    if kinds_map.get(out) != "acceleration":
+        raise ValueError(
+            f"analysis_io[{dir_key}].output must be an acceleration-classified variable; got {out!r} -> {kinds_map.get(out)!r}"
+        )
+    return inp, out
+
+
+def bind_directional_io_signals(
+    data: Mapping[str, Any],
+    input_name: str,
+    output_name: str,
+) -> Tuple[Any, Any]:
+    """Load force input and acceleration output arrays from a measurement dict."""
+    if input_name not in data:
+        raise ValueError(f"Missing required input signal: {input_name!r}")
+    if output_name not in data or data.get(output_name) is None:
+        raise ValueError(f"Missing required output signal: {output_name!r}")
+    u = np.asarray(data[input_name], dtype=float)
+    y_accel = np.asarray(data[output_name], dtype=float)
+    return u, y_accel
 
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
