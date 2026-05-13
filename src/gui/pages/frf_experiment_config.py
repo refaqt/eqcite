@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QFormLayout,
     QHBoxLayout,
@@ -176,6 +177,7 @@ class FrfSensorConfigPage(QWidget):
             self._tabs.setCurrentIndex(int(idx))
 
     def sync_from_widgets(self) -> None:
+        self._commit_widget_edits()
         self._sync_model_from_widgets()
 
     def apply_experiment_config(self, cfg: Dict[str, Any]) -> None:
@@ -244,8 +246,8 @@ class FrfSensorConfigPage(QWidget):
                 out.append(s)
         return out
 
-    def _snapshot_cfg(self) -> Dict[str, Any]:
-        self._sync_model_from_widgets()
+    def _snapshot_cfg(self, *, sync_io: bool = True) -> Dict[str, Any]:
+        self._sync_model_from_widgets(sync_io=sync_io)
         return {
             "sensor_catalog": list(self._model.sensor_catalog or []),
             "mapping": list(self._model.mapping_rows or []),
@@ -256,7 +258,7 @@ class FrfSensorConfigPage(QWidget):
 
     def _force_and_accel_names(self) -> Tuple[List[str], List[str], Optional[str]]:
         try:
-            kinds = experiment_config.build_variable_kinds(self._snapshot_cfg())
+            kinds = experiment_config.build_variable_kinds(self._snapshot_cfg(sync_io=False))
         except Exception as e:
             return [], [], str(e)
         forces = sorted([n for n, k in kinds.items() if k == "force"])
@@ -272,6 +274,7 @@ class FrfSensorConfigPage(QWidget):
             self._io_status_label.setStyleSheet("")
 
     def _reload_io_combos(self) -> None:
+        io = dict(self._model.analysis_io or {})
         forces, accels, err = self._force_and_accel_names()
         status_msgs: List[str] = []
         if err:
@@ -279,7 +282,6 @@ class FrfSensorConfigPage(QWidget):
         status_msgs.extend(self._mapping_warnings)
         self._set_io_status(status_msgs)
 
-        io = dict(self._model.analysis_io or {})
         xb, yb = io.get("x") or {}, io.get("y") or {}
         cur_x_in = str(xb.get("input") or "")
         cur_x_out = str(xb.get("output") or "")
@@ -305,6 +307,7 @@ class FrfSensorConfigPage(QWidget):
         refill(self._io_x_out, accels, cur_x_out)
         refill(self._io_y_in, forces, cur_y_in)
         refill(self._io_y_out, accels, cur_y_out)
+        self._model.analysis_io = io
 
     def _reload_all_from_model(self) -> None:
         self._reload_catalog_from_model()
@@ -370,7 +373,15 @@ class FrfSensorConfigPage(QWidget):
         finally:
             self._expr_table.blockSignals(False)
 
-    def _sync_model_from_widgets(self) -> None:
+    def _commit_widget_edits(self) -> None:
+        for table in (self._mapping_table, self._catalog_table, self._expr_table):
+            table.clearFocus()
+        fw = QApplication.focusWidget()
+        if fw is not None:
+            fw.clearFocus()
+        QApplication.processEvents()
+
+    def _sync_model_from_widgets(self, *, sync_io: bool = True) -> None:
         self._mapping_warnings = []
 
         catalog: List[Dict[str, Any]] = []
@@ -446,17 +457,18 @@ class FrfSensorConfigPage(QWidget):
                 expressions.append({"name": vn, "expr": ex})
         self._model.expressions = expressions
 
-        def _io_pair(in_cb: QComboBox, out_cb: QComboBox) -> Dict[str, str]:
-            ui = str(in_cb.currentData() or "").strip()
-            uo = str(out_cb.currentData() or "").strip()
-            if not ui or not uo:
-                return {}
-            return {"input": ui, "output": uo}
+        if sync_io:
+            def _io_pair(in_cb: QComboBox, out_cb: QComboBox) -> Dict[str, str]:
+                ui = str(in_cb.currentData() or "").strip()
+                uo = str(out_cb.currentData() or "").strip()
+                if not ui or not uo:
+                    return {}
+                return {"input": ui, "output": uo}
 
-        self._model.analysis_io = {
-            "x": _io_pair(self._io_x_in, self._io_x_out),
-            "y": _io_pair(self._io_y_in, self._io_y_out),
-        }
+            self._model.analysis_io = {
+                "x": _io_pair(self._io_x_in, self._io_x_out),
+                "y": _io_pair(self._io_y_in, self._io_y_out),
+            }
 
     def _on_tab_changed(self, index: int) -> None:
         if index == self._io_tab_index:

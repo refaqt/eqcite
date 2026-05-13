@@ -55,8 +55,8 @@ python -m src.gui.app
 # frf_experiment_config.py — page emits default_save_requested with full blob
 # main_window.py — _on_save_default_experiment_config merges into AppSettings and save_app_settings()
 ```
-**Gotchas:** Legacy installs may still have `default_channel_mapping`; `MainWindow` prefers `default_experiment_config` when non-empty. **Save as default** clears legacy triples once the new blob is written.
-**Last used:** 2026-05-12 (experiment configuration redesign)
+**Gotchas:** Legacy installs may still have `default_channel_mapping`; `MainWindow` prefers `default_experiment_config` when non-empty. **Save as default** clears legacy triples once the new blob is written. When rebuilding Input/Output combos, do not sync IO from stale widgets before applying saved `analysis_io` (capture model IO first, or sync catalog/mapping/expressions only).
+**Last used:** 2026-05-13
 
 ## Simulation config smoke-run
 **When to use:** Quickly verify the FRF pipeline works end-to-end without needing access to measurement CSV paths.
