@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from src.experiment_config import experiment_cfg_for_snapshot, uses_new_experiment_schema
+from src import frf_estimation
 from src.gui.analysis_export import (
     _csd_ur_from_frequency_table,
     _read_frequency_csv,
@@ -129,6 +130,50 @@ class AnalysisExportTests(unittest.TestCase):
             coh = (np.abs(Pur) ** 2) / ((Puu * Prr) + 1e-30)
             coh = np.clip(coh, 0.0, 1.0)
             self.assertTrue(np.all(coh[1:] > 0))
+
+    def test_average_frf_from_spectra_h1_not_complex_mean(self) -> None:
+        f_hz = np.array([1.0, 2.0, 3.0, 4.0])
+        p1 = _Proc()
+        p1.f_hz = f_hz
+        p1.psd_u = np.array([1.0, 1.0, 1.0, 1.0])
+        p1.psd_r = np.ones(4)
+        p1.csd_ur = np.array([1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j])
+        p2 = _Proc()
+        p2.f_hz = f_hz
+        p2.psd_u = np.array([2.0, 2.0, 2.0, 2.0])
+        p2.psd_r = np.ones(4)
+        p2.csd_ur = np.array([0.0 + 1.0j, 0.0 + 1.0j, 0.0 + 1.0j, 0.0 + 1.0j])
+        _, H_accel, _ = frf_estimation.average_frf_from_processing([p1, p2], estimator_type="H1")
+        H1_tap = np.stack([p1.csd_ur / p1.psd_u, p2.csd_ur / p2.psd_u], axis=0)
+        H_complex_mean = np.mean(H1_tap, axis=0)
+        Puy = np.mean(np.stack([p1.csd_ur, p2.csd_ur], axis=0), axis=0)
+        Puu = np.mean(np.stack([p1.psd_u, p2.psd_u], axis=0), axis=0)
+        H_spectral = Puy / Puu
+        np.testing.assert_allclose(H_accel, H_spectral)
+        self.assertFalse(np.allclose(H_accel, H_complex_mean))
+
+    def test_export_average_frf_uses_spectral_h1(self) -> None:
+        m1 = _Measurement("a.csv")
+        m2 = _Measurement("b.csv")
+        m1.proc.psd_u = np.array([1.0, 1.0, 1.0, 1.0])
+        m1.proc.csd_ur = np.array([1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j])
+        m2.proc.psd_u = np.array([2.0, 2.0, 2.0, 2.0])
+        m2.proc.csd_ur = np.array([0.0 + 1.0j, 0.0 + 1.0j, 0.0 + 1.0j, 0.0 + 1.0j])
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            manifest = export_frf_results(
+                folder,
+                x_measurements=[m1, m2],
+                y_measurements=[],
+                meta={"analysis_type": "frf", "estimator_type": "H1"},
+            )
+            bundle = import_frf_results(folder, manifest)
+            avg_entry = next(e for e in bundle["averages"] if e.get("direction") == "x")
+            _, Ha = avg_entry["accelerance"]
+            _, H_expected, _ = frf_estimation.average_frf_from_processing(
+                [m1.proc, m2.proc], estimator_type="H1"
+            )
+            np.testing.assert_allclose(Ha, H_expected)
 
     def test_csd_backfill_from_legacy_frequency_csv(self) -> None:
         f_hz = np.linspace(1.0, 4.0, 4)

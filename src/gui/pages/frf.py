@@ -1250,8 +1250,7 @@ class FrfResultsPage(QWidget):
                 y_label="Compliance (m/N)",
                 title="Displacement/Force FRF",
                 avg_on=avg_on,
-                x_all=[m.compliance for m in (self._x_measurements or [])],
-                y_all=[m.compliance for m in (self._y_measurements or [])],
+                compliance_avg=True,
             )
             return
         if tab_id == "bode_accel":
@@ -1262,8 +1261,7 @@ class FrfResultsPage(QWidget):
                 y_label="Accelerance ((m/s²)/N)",
                 title="Acceleration/Force FRF",
                 avg_on=avg_on,
-                x_all=[m.accelerance for m in (self._x_measurements or [])],
-                y_all=[m.accelerance for m in (self._y_measurements or [])],
+                compliance_avg=False,
             )
             return
 
@@ -1532,11 +1530,14 @@ class FrfResultsPage(QWidget):
             self._redraw_tab(tid)
 
     def export_results(self, analysis_folder: Path) -> dict:
+        meta = dict(self._last_run_meta or {})
+        meta["filtering"] = dict(self._filtering_cfg or {})
+        meta["estimator_type"] = str(self._filtering_cfg.get("estimator_type") or "Hv")
         return export_frf_results(
             Path(analysis_folder),
             x_measurements=self._x_measurements,
             y_measurements=self._y_measurements,
-            meta=dict(self._last_run_meta or {}),
+            meta=meta,
         )
 
     def _compute_directional(
@@ -1576,7 +1577,7 @@ class FrfResultsPage(QWidget):
         )
 
         f, H_accel = frf_estimation.compute_frf_from_signals(time, u_proc, y_proc, params)
-        H_disp = accel_to_disp_over_force(f, H_accel)
+        H_disp = frf_estimation.accel_to_disp_over_force(f, H_accel)
 
         proc = self._compute_processing_steps(
             time=time,
@@ -1996,41 +1997,37 @@ class FrfResultsPage(QWidget):
             add(ax2, y_res[1], "Y")
 
         if avg_on:
-            def avg_frf(items: List[Tuple[np.ndarray, np.ndarray]]) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-                if not items:
-                    return None
-                f0 = np.asarray(items[0][0], dtype=float)
-                Hs = [np.asarray(it[1], dtype=complex) for it in items]
-                Havg = np.mean(np.stack(Hs, axis=0), axis=0)
-                return f0, Havg
+            et = str(self._filtering_cfg.get("estimator_type") or "Hv")
 
-            x_comp = avg_frf([m.compliance for m in (getattr(self, "_x_measurements", []) or [])])
-            x_acc = avg_frf([m.accelerance for m in (getattr(self, "_x_measurements", []) or [])])
-            y_comp = avg_frf([m.compliance for m in (getattr(self, "_y_measurements", []) or [])])
-            y_acc = avg_frf([m.accelerance for m in (getattr(self, "_y_measurements", []) or [])])
-            if x_comp is not None:
-                add(ax1, x_comp, "X avg")
-            if x_acc is not None:
-                add(ax2, x_acc, "X avg")
-            if y_comp is not None:
-                add(ax1, y_comp, "Y avg")
-            if y_acc is not None:
-                add(ax2, y_acc, "Y avg")
+            def avg_frf(procs: List[_DirectionalProcessing]) -> Optional[Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]]:
+                if not procs:
+                    return None
+                f_hz, H_accel, H_disp = frf_estimation.average_frf_from_processing(procs, estimator_type=et)
+                return (f_hz, H_disp), (f_hz, H_accel)
+
+            x_avg = avg_frf([m.proc for m in (getattr(self, "_x_measurements", []) or [])])
+            y_avg = avg_frf([m.proc for m in (getattr(self, "_y_measurements", []) or [])])
+            if x_avg is not None:
+                add(ax1, x_avg[0], "X avg")
+                add(ax2, x_avg[1], "X avg")
+            if y_avg is not None:
+                add(ax1, y_avg[0], "Y avg")
+                add(ax2, y_avg[1], "Y avg")
 
         ax1.legend(loc="best")
         ax2.legend(loc="best")
         widget.redraw()
 
-    @staticmethod
     def _plot_bode(
+        self,
         widget: MatplotlibFigureWidget,
         x: Optional[Tuple[np.ndarray, np.ndarray]],
         y: Optional[Tuple[np.ndarray, np.ndarray]],
         y_label: str,
         title: str,
+        *,
         avg_on: bool = False,
-        x_all: Optional[List[Tuple[np.ndarray, np.ndarray]]] = None,
-        y_all: Optional[List[Tuple[np.ndarray, np.ndarray]]] = None,
+        compliance_avg: bool = True,
     ) -> None:
         fig = widget.figure
         fig.clear()
@@ -2055,15 +2052,18 @@ class FrfResultsPage(QWidget):
             add_trace(y, "Y")
 
         if avg_on:
-            def add_avg(items: Optional[List[Tuple[np.ndarray, np.ndarray]]], label: str) -> None:
-                if not items:
-                    return
-                f0 = np.asarray(items[0][0], dtype=float)
-                Havg = np.mean(np.stack([np.asarray(it[1], dtype=complex) for it in items], axis=0), axis=0)
-                add_trace((f0, Havg), f"{label} avg")
+            et = str(self._filtering_cfg.get("estimator_type") or "Hv")
 
-            add_avg(x_all, "X")
-            add_avg(y_all, "Y")
+            def add_avg(measurements: Optional[List[_DirectionalMeasurement]], label: str) -> None:
+                if not measurements:
+                    return
+                procs = [m.proc for m in measurements]
+                f_hz, H_accel, H_disp = frf_estimation.average_frf_from_processing(procs, estimator_type=et)
+                H = H_disp if compliance_avg else H_accel
+                add_trace((f_hz, H), f"{label} avg")
+
+            add_avg(getattr(self, "_x_measurements", None) or [], "X")
+            add_avg(getattr(self, "_y_measurements", None) or [], "Y")
 
         ax_mag.set_title(title)
         ax_mag.set_ylabel(y_label)
@@ -2312,14 +2312,4 @@ def json_load(path: Path) -> Dict[str, Any]:
 
     return json.loads(path.read_text(encoding="utf-8"))
 
-
-def accel_to_disp_over_force(f: np.ndarray, H_accel: np.ndarray) -> np.ndarray:
-    f = np.asarray(f, dtype=float)
-    H_accel = np.asarray(H_accel, dtype=complex)
-    out = np.zeros_like(H_accel, dtype=complex)
-    omega2 = (2 * np.pi * f) ** 2
-    mask = omega2 > 0
-    out[mask] = H_accel[mask] / (-omega2[mask])
-    out[~mask] = 0.0
-    return out
 
