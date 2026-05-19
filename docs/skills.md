@@ -23,17 +23,22 @@ python -m src.gui.app
 **Pattern:**
 ```text
 <analysis-name>/
-  analysis.json          # format_version: 2
+  analysis.json          # format_version: 2; experiment_cfg sanitized for new schema
   results/
     tables/
       time/<direction>/<measurement_key>.csv
       time/<direction>/average.csv
+      raw/<direction>/<measurement_key>.csv
+      fft/<direction>/<measurement_key>.csv
+      fft/<direction>/average.csv
       frequency/<direction>/<measurement_key>.csv
       frequency/<direction>/average.csv
       stability/...
     figures/
       time/<direction>/<measurement_key>/...
-      frequency/<direction>/<measurement_key>/...
+      raw/<direction>/<measurement_key>/mosaic.png
+      fft/<direction>/<measurement_key>/fft_magnitude.png
+      frequency/<direction>/<measurement_key>/...  # coherence, Bode, force_psd
       stability/...
     logs/export_log.json
 ```
@@ -41,8 +46,9 @@ python -m src.gui.app
 - `analysis.json` must include `format_version: 2`; older snapshots are not loaded.
 - Save prompts for a **parent folder** and **analysis name**; the nested tab title updates to that name.
 - Load overwrites the **active nested tab** in the current FRF or Stability workspace (switching top-level mode when the snapshot type differs).
-- FRF time CSV columns: `time_s`, raw force/response, then processing-step columns; frequency CSV includes coherence plus Bode displacement/force and acceleration/force (real, imag, magnitude, phase).
-**Last used:** 2026-05-13
+- FRF time CSV columns: `time_s`, raw force/response, then processing-step columns; frequency CSV adds `force_psd` / `response_psd` plus coherence and Bode columns; FFT CSV stores per-step magnitude and complex coefficients for average overlays after reload.
+- Saved `experiment_cfg` omits legacy `channel_mapping`, `sensitivity_mapping`, and `frf_pairs*` when `sensor_catalog` is non-empty (`experiment_config.experiment_cfg_for_snapshot`).
+**Last used:** 2026-05-19
 
 ---
 

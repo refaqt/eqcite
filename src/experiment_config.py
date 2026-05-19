@@ -329,3 +329,42 @@ def migrate_legacy_experiment_cfg(
         },
     )
     return out_cfg
+
+
+_NEW_SCHEMA_SNAPSHOT_KEYS = frozenset(
+    {
+        "analysis_type",
+        "data_source",
+        "description",
+        "file_paths_x",
+        "file_paths_y",
+        "simulation",
+        "sensor_catalog",
+        "mapping",
+        "expressions",
+        "analysis_io",
+        "simulation_signal_map",
+        "filtering",
+        "bias_window_size",
+    }
+)
+
+def experiment_cfg_for_snapshot(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    """
+    Return experiment_cfg suitable for analysis.json persistence.
+    Strips obsolete legacy keys when the new sensor_catalog schema is active.
+    """
+    cfg = dict(cfg or {})
+    if uses_new_experiment_schema(cfg):
+        out: Dict[str, Any] = {}
+        for key in _NEW_SCHEMA_SNAPSHOT_KEYS:
+            if key not in cfg:
+                continue
+            val = cfg[key]
+            if key == "description" and not str(val or "").strip():
+                continue
+            out[key] = val
+        return out
+    # Legacy schema: drop comment key only; keep mappings and frf_pairs*.
+    out = {k: v for k, v in cfg.items() if k != "//"}
+    return out

@@ -40,12 +40,14 @@ class FrfInputModel:
         )
 
     def to_experiment_cfg_fragment(self) -> Dict[str, Any]:
-        return {
+        out: Dict[str, Any] = {
             "sensor_catalog": list(self.sensor_catalog or []),
             "mapping": list(self.mapping_rows or []),
             "expressions": list(self.expressions or []),
             "analysis_io": dict(self.analysis_io or {}),
             "simulation_signal_map": dict(self.simulation_signal_map or {}),
-            "channel_mapping": dict(self.channel_mapping or {}),
-            "sensitivity_mapping": dict(self.sensitivity_mapping or {}),
         }
+        if not (self.sensor_catalog or []):
+            out["channel_mapping"] = dict(self.channel_mapping or {})
+            out["sensitivity_mapping"] = dict(self.sensitivity_mapping or {})
+        return out

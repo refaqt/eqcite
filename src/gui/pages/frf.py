@@ -252,7 +252,7 @@ class FrfRootPage(QWidget):
         base["filtering"] = f_cfg
         if "bias_window_size" in f_cfg:
             base["bias_window_size"] = int(f_cfg["bias_window_size"])
-        return base
+        return experiment_config.experiment_cfg_for_snapshot(base)
 
     def apply_experiment_cfg(self, cfg: Dict[str, Any]) -> None:
         cfg = dict(cfg or {})
@@ -1271,12 +1271,10 @@ class FrfResultsPage(QWidget):
         self._filtering_cfg = _strip_savgol_from_filtering_cfg(dict(cfg or {}))
 
     def _build_experiment_cfg(self) -> Dict[str, Any]:
-        repo_root = Path(__file__).resolve().parents[3]
-        cfg_path = repo_root / "config" / "config_before_cabinet_assembly.json"
-        base = json_load(cfg_path) if cfg_path.exists() else {}
-        out = dict(base)
-        out["analysis_type"] = "frf"
-        out["data_source"] = self._model.data_source
+        out: Dict[str, Any] = {
+            "analysis_type": "frf",
+            "data_source": self._model.data_source,
+        }
         out.update(self._model.to_experiment_cfg_fragment())
         if self._model.data_source == "simulation":
             out["simulation"] = self._model.simulation or {}
@@ -1487,10 +1485,13 @@ class FrfResultsPage(QWidget):
             io_input_name=str(entry.get("io_input_name") or ""),
             io_output_name=str(entry.get("io_output_name") or ""),
         )
+        raw_channels = entry.get("raw_channels")
+        if raw_channels is not None and not isinstance(raw_channels, dict):
+            raw_channels = None
         return _DirectionalMeasurement(
             direction=direction,
             filepath=entry.get("filepath"),
-            raw_channels=None,
+            raw_channels=dict(raw_channels) if raw_channels else None,
             proc=proc,
             compliance=(np.asarray(f_hz, dtype=float), np.asarray(Hc, dtype=complex)),
             accelerance=(np.asarray(f_hz, dtype=float), np.asarray(Ha, dtype=complex)),
