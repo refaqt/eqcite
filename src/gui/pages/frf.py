@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QFileDialog,
+    QInputDialog,
 )
 
 from ... import experiment_config, expression_eval, frf_estimation, load_data, signal_processing
@@ -2530,8 +2531,29 @@ class FrfComparePage(QWidget):
         if it is None:
             return
         menu = QMenu(self)
+        act_edit = menu.addAction("Edit name")
         act_rm = menu.addAction("Remove")
         chosen = menu.exec(self._entry_list.mapToGlobal(pos))
+        if chosen == act_edit:
+            ent = it.data(Qt.ItemDataRole.UserRole)
+            if not isinstance(ent, _CompareEntry):
+                return
+            new_name, ok = QInputDialog.getText(
+                self,
+                "Edit compare entry name",
+                "Name:",
+                text=str(ent.name or ""),
+            )
+            if not ok:
+                return
+            new_name = (new_name or "").strip()
+            if not new_name:
+                QMessageBox.warning(self, "Compare", "Name cannot be empty.")
+                return
+            ent.name = new_name
+            self._rebuild_entry_list()
+            self._redraw()
+            return
         if chosen == act_rm:
             ent = it.data(Qt.ItemDataRole.UserRole)
             self._entries = [e for e in self._entries if e is not ent]
