@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QFileDialog,
+    QInputDialog,
 )
 
 from ... import experiment_config, expression_eval, frf_estimation, load_data, signal_processing
@@ -131,7 +132,7 @@ class FrfRootPage(QWidget):
     default_filtering_save_requested = Signal(dict)
     file_paths_changed = Signal(object, object)  # (x_paths, y_paths) where each is List[str]
 
-    def __init__(self) -> None:
+    def __init__(self, *, compare_entries_shared: Optional[List[_CompareEntry]] = None) -> None:
         super().__init__()
 
         self._menu = QListWidget()
@@ -159,6 +160,10 @@ class FrfRootPage(QWidget):
             self._input_model,
             sync_experiment_widgets=self._page_sensor.sync_from_widgets,
         )
+        self._page_compare = FrfComparePage(
+            open_frf_tabs_provider=lambda: [],
+            entries_shared=compare_entries_shared,
+        )
 
         self._page_sensor.default_save_requested.connect(self.default_experiment_config_save_requested)
         self._page_input.file_paths_changed.connect(self.file_paths_changed)
@@ -169,8 +174,9 @@ class FrfRootPage(QWidget):
         self._stack.addWidget(self._wrap(self._page_sensor))
         self._stack.addWidget(self._wrap(self._page_filtering))
         self._stack.addWidget(self._wrap(self._page_results))
+        self._stack.addWidget(self._wrap(self._page_compare))
 
-        for name in ["Input data", "Experiment configuration", "Analysis settings", "Results"]:
+        for name in ["Input data", "Experiment configuration", "Analysis settings", "Results", "Compare"]:
             self._menu.addItem(QListWidgetItem(name))
         self._menu.setCurrentRow(0)
         self._menu.currentRowChanged.connect(self._stack.setCurrentIndex)
@@ -187,6 +193,14 @@ class FrfRootPage(QWidget):
 
         # Ensure the Results page sees the initial filtering config (defaults).
         self._page_results.set_filtering_cfg(self._page_filtering.build_filtering_cfg())
+
+    def set_open_frf_tabs_provider(self, provider: Callable[[], List[object]]) -> None:
+        """
+        Provide a callable returning the currently-open FRF analysis tabs.
+
+        The provider is injected by the workspace so Compare can pull results from other tabs.
+        """
+        self._page_compare.set_open_frf_tabs_provider(provider)
 
     def set_default_load_dir(self, path: str) -> None:
         self._page_input.set_default_load_dir(path)
@@ -1250,8 +1264,7 @@ class FrfResultsPage(QWidget):
                 y_label="Compliance (m/N)",
                 title="Displacement/Force FRF",
                 avg_on=avg_on,
-                x_all=[m.compliance for m in (self._x_measurements or [])],
-                y_all=[m.compliance for m in (self._y_measurements or [])],
+                compliance_avg=True,
             )
             return
         if tab_id == "bode_accel":
@@ -1262,8 +1275,7 @@ class FrfResultsPage(QWidget):
                 y_label="Accelerance ((m/s²)/N)",
                 title="Acceleration/Force FRF",
                 avg_on=avg_on,
-                x_all=[m.accelerance for m in (self._x_measurements or [])],
-                y_all=[m.accelerance for m in (self._y_measurements or [])],
+                compliance_avg=False,
             )
             return
 
@@ -1532,12 +1544,60 @@ class FrfResultsPage(QWidget):
             self._redraw_tab(tid)
 
     def export_results(self, analysis_folder: Path) -> dict:
+        meta = dict(self._last_run_meta or {})
+        meta["filtering"] = dict(self._filtering_cfg or {})
+        meta["estimator_type"] = str(self._filtering_cfg.get("estimator_type") or "Hv")
         return export_frf_results(
             Path(analysis_folder),
             x_measurements=self._x_measurements,
             y_measurements=self._y_measurements,
-            meta=dict(self._last_run_meta or {}),
+            meta=meta,
         )
+
+    def list_compliance_sources(self, *, direction: str) -> List[Tuple[str, str, int]]:
+        """
+        Enumerate selectable compliance sources for Compare.
+
+        Returns a list of (label, kind, index) where:
+        - kind == "measurement" and index is the measurement index, or
+        - kind == "average" and index is always 0.
+        """
+        direction = (direction or "x").strip().lower()
+        measurements = self._x_measurements if direction == "x" else self._y_measurements
+        paths = [str(m.filepath or "") for m in (measurements or [])]
+        labels = self._disambiguate_labels(paths)
+        out: List[Tuple[str, str, int]] = []
+        for i, lab in enumerate(labels):
+            out.append((str(lab), "measurement", int(i)))
+        if measurements:
+            out.append(("Average", "average", 0))
+        return out
+
+    def get_compliance_series(self, *, direction: str, kind: str, index: int = 0) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """
+        Return (f_hz, Hc_complex) for compliance (displacement/force).
+
+        - kind="measurement": uses selected measurement index
+        - kind="average": uses estimator-consistent average in complex spectra space
+        """
+        direction = (direction or "x").strip().lower()
+        kind = (kind or "measurement").strip().lower()
+        measurements = self._x_measurements if direction == "x" else self._y_measurements
+        if not measurements:
+            return None
+
+        if kind == "average":
+            et = str(self._filtering_cfg.get("estimator_type") or "Hv")
+            procs = [m.proc for m in measurements]
+            f_hz, _H_accel, H_disp = frf_estimation.average_frf_from_processing(procs, estimator_type=et)
+            return np.asarray(f_hz, dtype=float), np.asarray(H_disp, dtype=complex)
+
+        idx = int(index)
+        if idx < 0 or idx >= len(measurements):
+            return None
+        f_hz, Hc = measurements[idx].compliance
+        return np.asarray(f_hz, dtype=float), np.asarray(Hc, dtype=complex)
+
 
     def _compute_directional(
         self,
@@ -1576,7 +1636,7 @@ class FrfResultsPage(QWidget):
         )
 
         f, H_accel = frf_estimation.compute_frf_from_signals(time, u_proc, y_proc, params)
-        H_disp = accel_to_disp_over_force(f, H_accel)
+        H_disp = frf_estimation.accel_to_disp_over_force(f, H_accel)
 
         proc = self._compute_processing_steps(
             time=time,
@@ -1996,41 +2056,37 @@ class FrfResultsPage(QWidget):
             add(ax2, y_res[1], "Y")
 
         if avg_on:
-            def avg_frf(items: List[Tuple[np.ndarray, np.ndarray]]) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-                if not items:
-                    return None
-                f0 = np.asarray(items[0][0], dtype=float)
-                Hs = [np.asarray(it[1], dtype=complex) for it in items]
-                Havg = np.mean(np.stack(Hs, axis=0), axis=0)
-                return f0, Havg
+            et = str(self._filtering_cfg.get("estimator_type") or "Hv")
 
-            x_comp = avg_frf([m.compliance for m in (getattr(self, "_x_measurements", []) or [])])
-            x_acc = avg_frf([m.accelerance for m in (getattr(self, "_x_measurements", []) or [])])
-            y_comp = avg_frf([m.compliance for m in (getattr(self, "_y_measurements", []) or [])])
-            y_acc = avg_frf([m.accelerance for m in (getattr(self, "_y_measurements", []) or [])])
-            if x_comp is not None:
-                add(ax1, x_comp, "X avg")
-            if x_acc is not None:
-                add(ax2, x_acc, "X avg")
-            if y_comp is not None:
-                add(ax1, y_comp, "Y avg")
-            if y_acc is not None:
-                add(ax2, y_acc, "Y avg")
+            def avg_frf(procs: List[_DirectionalProcessing]) -> Optional[Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]]:
+                if not procs:
+                    return None
+                f_hz, H_accel, H_disp = frf_estimation.average_frf_from_processing(procs, estimator_type=et)
+                return (f_hz, H_disp), (f_hz, H_accel)
+
+            x_avg = avg_frf([m.proc for m in (getattr(self, "_x_measurements", []) or [])])
+            y_avg = avg_frf([m.proc for m in (getattr(self, "_y_measurements", []) or [])])
+            if x_avg is not None:
+                add(ax1, x_avg[0], "X avg")
+                add(ax2, x_avg[1], "X avg")
+            if y_avg is not None:
+                add(ax1, y_avg[0], "Y avg")
+                add(ax2, y_avg[1], "Y avg")
 
         ax1.legend(loc="best")
         ax2.legend(loc="best")
         widget.redraw()
 
-    @staticmethod
     def _plot_bode(
+        self,
         widget: MatplotlibFigureWidget,
         x: Optional[Tuple[np.ndarray, np.ndarray]],
         y: Optional[Tuple[np.ndarray, np.ndarray]],
         y_label: str,
         title: str,
+        *,
         avg_on: bool = False,
-        x_all: Optional[List[Tuple[np.ndarray, np.ndarray]]] = None,
-        y_all: Optional[List[Tuple[np.ndarray, np.ndarray]]] = None,
+        compliance_avg: bool = True,
     ) -> None:
         fig = widget.figure
         fig.clear()
@@ -2055,15 +2111,18 @@ class FrfResultsPage(QWidget):
             add_trace(y, "Y")
 
         if avg_on:
-            def add_avg(items: Optional[List[Tuple[np.ndarray, np.ndarray]]], label: str) -> None:
-                if not items:
-                    return
-                f0 = np.asarray(items[0][0], dtype=float)
-                Havg = np.mean(np.stack([np.asarray(it[1], dtype=complex) for it in items], axis=0), axis=0)
-                add_trace((f0, Havg), f"{label} avg")
+            et = str(self._filtering_cfg.get("estimator_type") or "Hv")
 
-            add_avg(x_all, "X")
-            add_avg(y_all, "Y")
+            def add_avg(measurements: Optional[List[_DirectionalMeasurement]], label: str) -> None:
+                if not measurements:
+                    return
+                procs = [m.proc for m in measurements]
+                f_hz, H_accel, H_disp = frf_estimation.average_frf_from_processing(procs, estimator_type=et)
+                H = H_disp if compliance_avg else H_accel
+                add_trace((f_hz, H), f"{label} avg")
+
+            add_avg(getattr(self, "_x_measurements", None) or [], "X")
+            add_avg(getattr(self, "_y_measurements", None) or [], "Y")
 
         ax_mag.set_title(title)
         ax_mag.set_ylabel(y_label)
@@ -2239,6 +2298,460 @@ class FrfResultsPage(QWidget):
         )
 
 
+@dataclass
+class _CompareEntry:
+    tab_ref: object
+    tab_title: str
+    direction: str  # "x" | "y"
+    kind: str  # "measurement" | "average"
+    index: int
+    name: str
+
+
+class FrfComparePage(QWidget):
+    """
+    Cross-tab comparison for FRF results.
+
+    Allows overlaying compliance results (displacement/force) from any open FRF analysis tab.
+    """
+
+    def __init__(
+        self,
+        *,
+        open_frf_tabs_provider: Callable[[], List[object]],
+        entries_shared: Optional[List[_CompareEntry]] = None,
+    ) -> None:
+        super().__init__()
+        self._open_frf_tabs_provider: Callable[[], List[object]] = open_frf_tabs_provider
+        self._entries: List[_CompareEntry] = (
+            entries_shared if entries_shared is not None else []
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        title = QLabel("Compare")
+        title.setStyleSheet("font-weight: 600;")
+        layout.addWidget(title)
+
+        controls = QWidget()
+        c_l = QHBoxLayout(controls)
+        c_l.setContentsMargins(0, 0, 0, 0)
+        c_l.setAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        self._cb_tab = QComboBox()
+        self._cb_tab.setMinimumWidth(260)
+        self._cb_dir = QComboBox()
+        self._cb_dir.addItem("X", userData="x")
+        self._cb_dir.addItem("Y", userData="y")
+        self._cb_measurement = QComboBox()
+        self._cb_measurement.setMinimumWidth(260)
+        self._name_edit = QLineEdit("")
+        self._name_edit.setPlaceholderText("Entry name (legend)")
+        self._name_edit.setMinimumWidth(240)
+
+        self._btn_refresh = QPushButton("Refresh")
+        self._btn_add = QPushButton("Add")
+
+        self._btn_refresh.clicked.connect(self._refresh_sources)
+        self._cb_tab.currentIndexChanged.connect(self._refresh_measurements)
+        self._cb_dir.currentIndexChanged.connect(self._refresh_measurements)
+        self._cb_measurement.currentIndexChanged.connect(self._refresh_default_name)
+        self._btn_add.clicked.connect(self._on_add)
+
+        c_l.addWidget(QLabel("Tab"))
+        c_l.addWidget(self._cb_tab)
+        c_l.addSpacing(10)
+        c_l.addWidget(QLabel("Dir"))
+        c_l.addWidget(self._cb_dir)
+        c_l.addSpacing(10)
+        c_l.addWidget(QLabel("Measurement"))
+        c_l.addWidget(self._cb_measurement)
+        c_l.addSpacing(10)
+        c_l.addWidget(QLabel("Name"))
+        c_l.addWidget(self._name_edit, 1)
+        c_l.addSpacing(10)
+        c_l.addWidget(self._btn_add)
+        c_l.addWidget(self._btn_refresh)
+
+        layout.addWidget(controls)
+
+        mid = QSplitter(Qt.Orientation.Horizontal)
+        self._entry_list = QListWidget()
+        self._entry_list.setMinimumWidth(280)
+        self._entry_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._entry_list.customContextMenuRequested.connect(self._on_entry_context_menu)
+        mid.addWidget(self._entry_list)
+
+        self._tabs = QTabWidget()
+        self._plot_bode = MatplotlibFigureWidget()
+        self._plot_real = MatplotlibFigureWidget()
+        self._tabs.addTab(self._plot_bode, "Bode (displacement/force)")
+        self._tabs.addTab(self._plot_real, "Real(FRF) (displacement/force)")
+        mid.addWidget(self._tabs)
+        mid.setStretchFactor(0, 1)
+        mid.setStretchFactor(1, 4)
+        layout.addWidget(mid, 1)
+
+        export_row = QWidget()
+        e_l = QHBoxLayout(export_row)
+        e_l.setContentsMargins(0, 0, 0, 0)
+        e_l.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self._btn_save_csv = QPushButton("Save CSV…")
+        self._btn_save_png = QPushButton("Save PNG…")
+        self._btn_save_csv.clicked.connect(self._on_save_csv)
+        self._btn_save_png.clicked.connect(self._on_save_png)
+        e_l.addWidget(self._btn_save_csv)
+        e_l.addWidget(self._btn_save_png)
+        layout.addWidget(export_row)
+
+        self._refresh_sources()
+
+    def set_open_frf_tabs_provider(self, provider: Callable[[], List[object]]) -> None:
+        self._open_frf_tabs_provider = provider
+        self._refresh_sources()
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        # Keep source tabs fresh and mirror shared compare entries.
+        self._refresh_sources()
+        self._rebuild_entry_list()
+        self._redraw()
+
+    def _open_frf_tabs(self) -> List[object]:
+        try:
+            tabs = list(self._open_frf_tabs_provider() or [])
+        except Exception:
+            tabs = []
+        return tabs
+
+    @staticmethod
+    def _tab_title(tab: object) -> str:
+        t = getattr(tab, "title", None)
+        if isinstance(t, str) and t.strip():
+            return t.strip()
+        # fallback
+        return "Untitled"
+
+    @staticmethod
+    def _tab_results_page(tab: object) -> Optional[object]:
+        # AnalysisTab will expose this for FRF tabs.
+        fn = getattr(tab, "get_frf_results_page", None)
+        if callable(fn):
+            try:
+                return fn()
+            except Exception:
+                return None
+        return None
+
+    def _refresh_sources(self) -> None:
+        tabs = self._open_frf_tabs()
+        cur = self._cb_tab.currentData()
+        self._cb_tab.blockSignals(True)
+        try:
+            self._cb_tab.clear()
+            for i, tab in enumerate(tabs):
+                self._cb_tab.addItem(self._tab_title(tab), userData=tab)
+            # Try preserve selection
+            if cur is not None:
+                for i in range(self._cb_tab.count()):
+                    if self._cb_tab.itemData(i) is cur:
+                        self._cb_tab.setCurrentIndex(i)
+                        break
+        finally:
+            self._cb_tab.blockSignals(False)
+        self._refresh_measurements()
+
+    def _refresh_measurements(self) -> None:
+        tab = self._cb_tab.currentData()
+        direction = str(self._cb_dir.currentData() or "x")
+        rp = self._tab_results_page(tab) if tab is not None else None
+        sources: List[Tuple[str, str, int]] = []
+        if rp is not None:
+            fn = getattr(rp, "list_compliance_sources", None)
+            if callable(fn):
+                try:
+                    sources = list(fn(direction=direction) or [])
+                except Exception:
+                    sources = []
+
+        self._cb_measurement.blockSignals(True)
+        try:
+            self._cb_measurement.clear()
+            for lab, kind, idx in sources:
+                self._cb_measurement.addItem(str(lab), userData=(str(kind), int(idx)))
+        finally:
+            self._cb_measurement.blockSignals(False)
+        self._refresh_default_name()
+
+    def _refresh_default_name(self) -> None:
+        # Only set a default if user hasn't typed anything.
+        if (self._name_edit.text() or "").strip():
+            return
+        tab = self._cb_tab.currentData()
+        tab_title = self._tab_title(tab) if tab is not None else "Untitled"
+        direction = str(self._cb_dir.currentData() or "x").upper()
+        meas_lab = str(self._cb_measurement.currentText() or "Measurement")
+        self._name_edit.setText(f"{tab_title} - {direction} - {meas_lab}")
+
+    def _on_add(self) -> None:
+        tab = self._cb_tab.currentData()
+        if tab is None:
+            QMessageBox.warning(self, "Compare", "No FRF analysis tab available.")
+            return
+        rp = self._tab_results_page(tab)
+        if rp is None:
+            QMessageBox.warning(self, "Compare", "Selected tab has no FRF results page.")
+            return
+        sel = self._cb_measurement.currentData()
+        if not isinstance(sel, tuple) or len(sel) != 2:
+            QMessageBox.warning(self, "Compare", "No measurement selected.")
+            return
+        kind, idx = sel
+        direction = str(self._cb_dir.currentData() or "x")
+        name = (self._name_edit.text() or "").strip()
+        if not name:
+            self._name_edit.setFocus()
+            QMessageBox.warning(self, "Compare", "Please provide a name for the entry.")
+            return
+        ent = _CompareEntry(
+            tab_ref=tab,
+            tab_title=self._tab_title(tab),
+            direction=direction,
+            kind=str(kind),
+            index=int(idx),
+            name=name,
+        )
+        self._entries.append(ent)
+        self._name_edit.setText("")  # encourage new name next add
+        self._rebuild_entry_list()
+        self._redraw()
+
+    def _rebuild_entry_list(self) -> None:
+        self._entry_list.clear()
+        for ent in self._entries:
+            lab = f"{ent.name}  [{ent.tab_title} / {ent.direction.upper()} / {ent.kind}{'' if ent.kind=='average' else f'#{ent.index+1}'}]"
+            it = QListWidgetItem(lab)
+            it.setData(Qt.ItemDataRole.UserRole, ent)
+            self._entry_list.addItem(it)
+
+    def _on_entry_context_menu(self, pos) -> None:
+        it = self._entry_list.itemAt(pos)
+        if it is None:
+            return
+        menu = QMenu(self)
+        act_edit = menu.addAction("Edit name")
+        act_rm = menu.addAction("Remove")
+        chosen = menu.exec(self._entry_list.mapToGlobal(pos))
+        if chosen == act_edit:
+            ent = it.data(Qt.ItemDataRole.UserRole)
+            if not isinstance(ent, _CompareEntry):
+                return
+            new_name, ok = QInputDialog.getText(
+                self,
+                "Edit compare entry name",
+                "Name:",
+                text=str(ent.name or ""),
+            )
+            if not ok:
+                return
+            new_name = (new_name or "").strip()
+            if not new_name:
+                QMessageBox.warning(self, "Compare", "Name cannot be empty.")
+                return
+            ent.name = new_name
+            self._rebuild_entry_list()
+            self._redraw()
+            return
+        if chosen == act_rm:
+            ent = it.data(Qt.ItemDataRole.UserRole)
+            self._entries[:] = [e for e in self._entries if e is not ent]
+            self._rebuild_entry_list()
+            self._redraw()
+
+    @staticmethod
+    def _interp_complex(f_src: np.ndarray, H_src: np.ndarray, f_tgt: np.ndarray) -> np.ndarray:
+        f_src = np.asarray(f_src, dtype=float)
+        H_src = np.asarray(H_src, dtype=complex)
+        f_tgt = np.asarray(f_tgt, dtype=float)
+        if len(f_src) == 0 or len(f_tgt) == 0:
+            return np.asarray([], dtype=complex)
+        r = np.interp(f_tgt, f_src, np.real(H_src))
+        im = np.interp(f_tgt, f_src, np.imag(H_src))
+        return r + 1j * im
+
+    def _fetch_series(self, ent: _CompareEntry) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        rp = self._tab_results_page(ent.tab_ref)
+        if rp is None:
+            return None
+        fn = getattr(rp, "get_compliance_series", None)
+        if not callable(fn):
+            return None
+        try:
+            res = fn(direction=ent.direction, kind=ent.kind, index=ent.index)
+        except Exception:
+            return None
+        if res is None:
+            return None
+        f_hz, Hc = res
+        f_hz = np.asarray(f_hz, dtype=float)
+        Hc = np.asarray(Hc, dtype=complex)
+        mask = np.isfinite(f_hz) & (f_hz > 0) & np.isfinite(np.real(Hc)) & np.isfinite(np.imag(Hc))
+        return f_hz[mask], Hc[mask]
+
+    def _redraw(self) -> None:
+        self._plot_compare_bode()
+        self._plot_compare_real()
+
+    def _plot_compare_bode(self) -> None:
+        fig = self._plot_bode.figure
+        fig.clear()
+        ax_mag = fig.add_subplot(2, 1, 1)
+        ax_ph = fig.add_subplot(2, 1, 2, sharex=ax_mag)
+        ax_mag.set_title("Bode (displacement/force)")
+        ax_mag.set_ylabel("Magnitude |H| (m/N)")
+        ax_ph.set_xlabel("Frequency (Hz)")
+        ax_ph.set_ylabel("Phase (deg)")
+        for ax in (ax_mag, ax_ph):
+            ax.grid(True, which="both", alpha=0.3)
+            ax.set_xscale("log")
+        ax_mag.set_yscale("log")
+
+        series: List[Tuple[str, np.ndarray, np.ndarray]] = []
+        for ent in self._entries:
+            s = self._fetch_series(ent)
+            if s is None:
+                continue
+            f_hz, Hc = s
+            series.append((ent.name, f_hz, Hc))
+
+        if not series:
+            ax_mag.text(0.5, 0.5, "No entries. Add measurements to compare.", ha="center", va="center", transform=ax_mag.transAxes)
+            ax_mag.set_axis_off()
+            ax_ph.set_axis_off()
+            self._plot_bode.redraw()
+            return
+
+        f0 = series[0][1]
+        for name, f_hz, Hc in series:
+            H = Hc if np.allclose(f_hz, f0) else self._interp_complex(f_hz, Hc, f0)
+            mag = np.abs(H)
+            ph = np.unwrap(np.angle(H)) * 180.0 / np.pi
+            ax_mag.loglog(f0, mag, linewidth=1.8, label=name)
+            ax_ph.semilogx(f0, ph, linewidth=1.2, label=name)
+
+        ax_mag.legend(loc="best", fontsize=8)
+        ax_ph.legend(loc="best", fontsize=8)
+        self._plot_bode.redraw()
+
+    def _plot_compare_real(self) -> None:
+        fig = self._plot_real.figure
+        fig.clear()
+        ax = fig.add_subplot(1, 1, 1)
+        ax.set_title("Real(FRF) (displacement/force)")
+        ax.set_xlabel("Frequency (Hz)")
+        ax.set_ylabel("Re{H} (m/N)")
+        ax.grid(True, which="both", alpha=0.3)
+        ax.set_xscale("log")
+
+        series: List[Tuple[str, np.ndarray, np.ndarray]] = []
+        for ent in self._entries:
+            s = self._fetch_series(ent)
+            if s is None:
+                continue
+            f_hz, Hc = s
+            series.append((ent.name, f_hz, Hc))
+
+        if not series:
+            ax.text(0.5, 0.5, "No entries. Add measurements to compare.", ha="center", va="center", transform=ax.transAxes)
+            ax.set_axis_off()
+            self._plot_real.redraw()
+            return
+
+        f0 = series[0][1]
+        for name, f_hz, Hc in series:
+            H = Hc if np.allclose(f_hz, f0) else self._interp_complex(f_hz, Hc, f0)
+            ax.semilogx(f0, np.real(H), linewidth=1.6, label=name)
+        ax.legend(loc="best")
+        self._plot_real.redraw()
+
+    def _on_save_png(self) -> None:
+        tab_idx = int(self._tabs.currentIndex())
+        widget = self._plot_bode if tab_idx == 0 else self._plot_real
+        path, _ = QFileDialog.getSaveFileName(self, "Save plot as PNG", "", "PNG (*.png);;All files (*)")
+        if not path:
+            return
+        try:
+            widget.figure.savefig(path, dpi=200, bbox_inches="tight")
+        except Exception as e:
+            QMessageBox.critical(self, "Save PNG failed", str(e))
+
+    @staticmethod
+    def _sanitize_col(name: str) -> str:
+        import re
+
+        s = re.sub(r"[^a-zA-Z0-9_]+", "_", (name or "").strip())
+        s = re.sub(r"_+", "_", s).strip("_")
+        return s or "series"
+
+    def _on_save_csv(self) -> None:
+        tab_idx = int(self._tabs.currentIndex())
+        default_name = "compare_bode.csv" if tab_idx == 0 else "compare_real_frf.csv"
+        path, _ = QFileDialog.getSaveFileName(self, "Save plot data as CSV", default_name, "CSV (*.csv);;All files (*)")
+        if not path:
+            return
+
+        series: List[Tuple[str, np.ndarray, np.ndarray]] = []
+        for ent in self._entries:
+            s = self._fetch_series(ent)
+            if s is None:
+                continue
+            series.append((ent.name, s[0], s[1]))
+        if not series:
+            QMessageBox.warning(self, "Save CSV", "No data to export.")
+            return
+
+        f0 = series[0][1]
+        try:
+            with open(path, "w", newline="", encoding="utf-8") as fp:
+                w = csv.writer(fp)
+                if tab_idx == 0:
+                    # Bode: frequency + mag/phase per entry
+                    header = ["frequency_hz"]
+                    for name, _, _ in series:
+                        base = self._sanitize_col(name)
+                        header.extend([f"{base}_mag", f"{base}_phase_deg"])
+                    w.writerow(header)
+                    phases = []
+                    mags = []
+                    for _name, f_hz, Hc in series:
+                        H = Hc if np.allclose(f_hz, f0) else self._interp_complex(f_hz, Hc, f0)
+                        mags.append(np.abs(H))
+                        phases.append(np.unwrap(np.angle(H)) * 180.0 / np.pi)
+                    for i in range(len(f0)):
+                        row: List[Any] = [float(f0[i])]
+                        for mag, ph in zip(mags, phases):
+                            row.append(float(mag[i]))
+                            row.append(float(ph[i]))
+                        w.writerow(row)
+                else:
+                    # Real(FRF): frequency + real per entry
+                    header = ["frequency_hz"]
+                    for name, _, _ in series:
+                        base = self._sanitize_col(name)
+                        header.append(f"{base}_real")
+                    w.writerow(header)
+                    for i in range(len(f0)):
+                        row: List[Any] = [float(f0[i])]
+                        for _name, f_hz, Hc in series:
+                            H = Hc if np.allclose(f_hz, f0) else self._interp_complex(f_hz, Hc, f0)
+                            row.append(float(np.real(H[i])))
+                        w.writerow(row)
+        except Exception as e:
+            QMessageBox.critical(self, "Save CSV failed", str(e))
+
+
 def apply_frf_filtering_and_windowing(
     *,
     time: np.ndarray,
@@ -2312,14 +2825,4 @@ def json_load(path: Path) -> Dict[str, Any]:
 
     return json.loads(path.read_text(encoding="utf-8"))
 
-
-def accel_to_disp_over_force(f: np.ndarray, H_accel: np.ndarray) -> np.ndarray:
-    f = np.asarray(f, dtype=float)
-    H_accel = np.asarray(H_accel, dtype=complex)
-    out = np.zeros_like(H_accel, dtype=complex)
-    omega2 = (2 * np.pi * f) ** 2
-    mask = omega2 > 0
-    out[mask] = H_accel[mask] / (-omega2[mask])
-    out[~mask] = 0.0
-    return out
 

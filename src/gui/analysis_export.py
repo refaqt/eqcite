@@ -13,6 +13,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
+from .. import frf_estimation
+
 
 def slugify_measurement_key(label: str, used: set[str]) -> str:
   base = re.sub(r"[^a-zA-Z0-9._-]+", "_", (label or "").strip())
@@ -555,14 +557,6 @@ def _export_measurement_artifacts(
   return entry
 
 
-def _avg_complex_frf(items: Sequence[Tuple[np.ndarray, np.ndarray]]) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-  if not items:
-    return None
-  f0 = np.asarray(items[0][0], dtype=float)
-  Hs = [np.asarray(it[1], dtype=complex) for it in items]
-  return f0, np.mean(np.stack(Hs, axis=0), axis=0)
-
-
 def _avg_coherence(procs: Sequence[Any]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
   f0 = np.asarray(procs[0].f_hz, dtype=float)
   Puu = np.mean(np.stack([np.asarray(p.psd_u, dtype=float) for p in procs], axis=0), axis=0)
@@ -611,19 +605,20 @@ def _avg_fft_steps(procs: Sequence[Any]) -> Tuple[np.ndarray, Dict[str, np.ndarr
   return f0, fft_u_mag, fft_resp_mag, fft_u_complex, fft_resp_complex
 
 
-def _export_average_artifacts(folder: Path, *, direction: str, measurements: Sequence[Any]) -> Optional[Dict[str, Any]]:
+def _export_average_artifacts(
+  folder: Path,
+  *,
+  direction: str,
+  measurements: Sequence[Any],
+  estimator_type: str = "Hv",
+) -> Optional[Dict[str, Any]]:
   if not measurements:
     return None
   procs = [m.proc for m in measurements]
   time_s, u_steps, r_steps = _avg_time_steps(procs)
   force_raw = u_steps[0][1] if u_steps else np.zeros_like(time_s)
   response_raw = r_steps[0][1] if r_steps else np.zeros_like(time_s)
-  comp = _avg_complex_frf([m.compliance for m in measurements])
-  acc = _avg_complex_frf([m.accelerance for m in measurements])
-  if comp is None or acc is None:
-    return None
-  f_hz, Hc = comp
-  _, Ha = acc
+  f_hz, Ha, Hc = frf_estimation.average_frf_from_processing(procs, estimator_type=estimator_type)
   f_coh, coh, Pur_avg = _avg_coherence(procs)
   Puu_avg = np.mean(np.stack([np.asarray(p.psd_u, dtype=float) for p in procs], axis=0), axis=0)
   Prr_avg = np.mean(np.stack([np.asarray(p.psd_r, dtype=float) for p in procs], axis=0), axis=0)
@@ -727,6 +722,9 @@ def export_frf_results(folder: Path, *, x_measurements: Sequence[Any], y_measure
   folder = Path(folder).resolve()
   manifest: Dict[str, Any] = {"analysis_type": "frf", "x": [], "y": [], "averages": []}
   warnings: List[str] = []
+  meta = dict(meta or {})
+  filtering = meta.get("filtering") if isinstance(meta.get("filtering"), dict) else {}
+  estimator_type = str(meta.get("estimator_type") or filtering.get("estimator_type") or "Hv")
 
   for direction, measurements in (("x", x_measurements), ("y", y_measurements)):
     keys = measurement_keys_for_paths([getattr(m, "filepath", None) for m in measurements])
@@ -736,7 +734,12 @@ def export_frf_results(folder: Path, *, x_measurements: Sequence[Any], y_measure
       except Exception as e:
         warnings.append(f"Failed to export {direction} measurement: {e}")
     try:
-      avg_entry = _export_average_artifacts(folder, direction=direction, measurements=measurements)
+      avg_entry = _export_average_artifacts(
+        folder,
+        direction=direction,
+        measurements=measurements,
+        estimator_type=estimator_type,
+      )
       if avg_entry is not None:
         manifest["averages"].append(avg_entry)
     except Exception as e:

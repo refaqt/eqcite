@@ -61,14 +61,14 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
   - `FFT magnitude`: FFT magnitude view; supports optional **Average** overlay computed in complex FFT space
   - `Coherence`: \(\gamma^2(f)\) vs frequency; supports optional **Average** overlay derived from averaged spectra terms
   - `Force PSD`: force excitation PSD vs frequency; supports optional **Average** overlay from averaged PSD
-  - `Real(FRF)`: real part of compliance and accelerance; supports optional **Average** overlay from averaged complex FRF
-  - `Bode (displacement/force)` and `Bode (acceleration/force)`: magnitude/phase plots; supports optional **Average** overlay from averaged complex FRF
+  - `Real(FRF)`: real part of compliance and accelerance; supports optional **Average** overlay from estimator-consistent averaged Welch spectra
+  - `Bode (displacement/force)` and `Bode (acceleration/force)`: magnitude/phase plots; supports optional **Average** overlay from averaged Welch spectra + configured estimator (H1/H2/Hv)
 
 ### Multi-measurement FRF behavior
 
 - FRF input supports selecting **multiple CSV files per direction** (X and/or Y). X and Y are treated as **independent** lists (no pairing).
 - Each results tab has **X and Y measurement dropdowns** labeled by filename, which control which single measurement is displayed for that direction.
-- Frequency-domain tabs include an **Average** checkbox that overlays an additional **black** trace computed by averaging the **complex frequency components first** (then converting to magnitude/phase/real as appropriate).
+- Frequency-domain tabs include an **Average** checkbox: FFT averages complex bins first; coherence/PSD/FRF average Welch spectra first (FRF uses the configured H1/H2/Hv estimator on mean spectra).
 - **Persistence**:
   - The main window has top-level tabs **FRF**, **Stability**, and **Settings**. Each FRF/Stability tab hosts its own nested analysis tab bar (each titled `Untitled` or the saved analysis name). Toolbar actions **Load analysis**, **Save analysis**, and **Add analysis tab** apply to the active nested tab in the current mode; loading a snapshot whose `analysis_type` differs switches the top-level tab first.
   - An analysis is saved as a **folder** named by the user under a chosen parent directory. `analysis.json` uses **`format_version: 2`** and stores inputs, GUI chrome, and a **results manifest** (no large arrays in JSON). For the new experiment schema, `experiment_cfg` is sanitized via `experiment_config.experiment_cfg_for_snapshot` (no legacy `channel_mapping` / `frf_pairs*` keys).

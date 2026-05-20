@@ -168,19 +168,21 @@ self._y_measurements: list[_DirectionalMeasurement] = []
 self._tab_selectors: dict[str, tuple[QComboBox, QComboBox]] = {}
 self._tab_sel_idx: dict[str, tuple[int, int]] = {}
 
-# 3) For averaging: average complex frequency components first.
-H_avg = np.mean(np.stack(H_list, axis=0), axis=0)  # complex mean
-mag = np.abs(H_avg)
-phase_deg = np.unwrap(np.angle(H_avg)) * 180 / np.pi
+# 3) For FFT magnitude: average complex rFFT bins first, then abs().
+X_avg = np.mean(np.stack(X_list, axis=0), axis=0)
+mag = np.abs(X_avg)
 
-# 4) For coherence: average spectra terms, then compute coherence.
+# 4) For coherence and FRF: average Welch spectra, then compute.
 Pur_avg = np.mean(np.stack(Pur_list, axis=0), axis=0)  # complex
 Puu_avg = np.mean(np.stack(Puu_list, axis=0), axis=0)  # real
 Prr_avg = np.mean(np.stack(Prr_list, axis=0), axis=0)  # real
 coh = (np.abs(Pur_avg) ** 2) / ((Puu_avg * Prr_avg) + 1e-30)
+f_hz, H_accel, H_disp = frf_estimation.average_frf_from_processing(procs, estimator_type="H1")
+
+# 5) Do not use mean(per_tap H) for multi-tap FRF average overlays or export.
 ```
 **Gotchas:**
-- Don’t average magnitudes/phases directly; that can be wrong when phases differ.\n- Ensure all measurements use the same frequency grid (same sampling + Welch settings). If grids can differ, you must align/interpolate real/imag parts before averaging.\n- For FFT magnitude averaging, store/average the **complex rFFT bins** and only then take `abs()`.
+- Don’t average magnitudes/phases directly; that can be wrong when phases differ.\n- Don’t use `mean(H_i)` across taps for Welch FRF/Bode averages; use `average_frf_from_processing` (same spectra as coherence).\n- Ensure all measurements use the same frequency grid (same sampling + Welch settings). If grids can differ, you must align/interpolate real/imag parts before averaging.\n- For FFT magnitude averaging, store/average the **complex rFFT bins** and only then take `abs()`.
 **Last used:** 2026-05-12
 
 ---

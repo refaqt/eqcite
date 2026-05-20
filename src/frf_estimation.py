@@ -20,7 +20,7 @@ import warnings
 from scipy import signal
 from pyFRF import FRF
 import sys
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 from . import signal_processing
 
@@ -136,6 +136,87 @@ def get_system_parameters():
 # =============================================================================
 # FRF (single-input/single-output) helper
 # =============================================================================
+
+def compute_frf_from_averaged_spectra(
+    Puy: np.ndarray,
+    Puu: np.ndarray,
+    *,
+    Pyy: np.ndarray | None = None,
+    Pyu: np.ndarray | None = None,
+    estimator_type: str = "Hv",
+    eps: float = 1e-20,
+) -> np.ndarray:
+    """
+    Build a complex FRF from (ensemble-)averaged Welch cross/auto spectra.
+
+    Puy is G_yu (csd between input force and response). For real time series,
+    Pyu defaults to conj(Puy) when omitted.
+    """
+    Puy = np.asarray(Puy, dtype=complex)
+    Puu = np.asarray(Puu, dtype=float)
+    et = str(estimator_type or "Hv").strip()
+    if et not in {"H1", "H2", "Hv"}:
+        et = "Hv"
+
+    if et == "H1":
+        return Puy / (Puu + eps)
+
+    if Pyy is None:
+        raise ValueError("Pyy (response auto-spectrum) is required for H2 and Hv estimators")
+    Pyy = np.asarray(Pyy, dtype=float)
+    if Pyu is None:
+        Pyu = np.conj(Puy)
+    else:
+        Pyu = np.asarray(Pyu, dtype=complex)
+
+    if et == "H2":
+        return Pyy / (Pyu + eps)
+
+    phase = Puy / (np.abs(Puy) + eps)
+    return phase * np.sqrt((Pyy + eps) / (Puu + eps))
+
+
+def accel_to_disp_over_force(f: np.ndarray, H_accel: np.ndarray) -> np.ndarray:
+    """Convert accelerance H_accel(f) to compliance (displacement/force)."""
+    f = np.asarray(f, dtype=float)
+    H_accel = np.asarray(H_accel, dtype=complex)
+    out = np.zeros_like(H_accel, dtype=complex)
+    omega2 = (2 * np.pi * f) ** 2
+    mask = omega2 > 0
+    out[mask] = H_accel[mask] / (-omega2[mask])
+    out[~mask] = 0.0
+    return out
+
+
+def average_frf_from_processing(
+    procs: Sequence[Any],
+    *,
+    estimator_type: str = "Hv",
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Average FRF across taps using mean Welch spectra, then the configured estimator.
+
+    Each proc must expose f_hz, psd_u (Puu), psd_r (Pyy), and csd_ur (Puy).
+
+    Returns:
+        (f_hz, H_accel, H_disp)
+    """
+    if not procs:
+        raise ValueError("average_frf_from_processing requires at least one processing record")
+    f_hz = np.asarray(procs[0].f_hz, dtype=float)
+    Puu = np.mean(np.stack([np.asarray(p.psd_u, dtype=float) for p in procs], axis=0), axis=0)
+    Pyy = np.mean(np.stack([np.asarray(p.psd_r, dtype=float) for p in procs], axis=0), axis=0)
+    Puy = np.mean(np.stack([np.asarray(p.csd_ur, dtype=complex) for p in procs], axis=0), axis=0)
+    H_accel = compute_frf_from_averaged_spectra(
+        Puy,
+        Puu,
+        Pyy=Pyy,
+        estimator_type=estimator_type,
+    )
+    H_disp = accel_to_disp_over_force(f_hz, H_accel)
+    return f_hz, H_accel, H_disp
+
+
 def compute_frf_from_signals(
     time: np.ndarray,
     input_signal: np.ndarray,
@@ -189,18 +270,13 @@ def compute_frf_from_signals(
     if not np.allclose(f, f2):
         raise RuntimeError("Frequency grids from CSD calculations do not match")
 
-    # Branch on estimator type (H1, H2, Hv).
-    # eps avoids division by ~0 in the spectral estimates.
-    eps = 1e-20
-    et = estimator_type.strip()
+    et = str(estimator_type or "Hv").strip()
     if et not in {"H1", "H2", "Hv"}:
         et = "Hv"
 
     if et == "H1":
-        # H1(ω) = G_yu / G_uu
-        H = Puy / (Puu + eps)
+        H = compute_frf_from_averaged_spectra(Puy, Puu, estimator_type="H1")
     else:
-        # Need additional spectra for H2 and Hv.
         f3, Pyy = signal.csd(
             y,
             y,
@@ -219,14 +295,13 @@ def compute_frf_from_signals(
         )
         if not (np.allclose(f, f3) and np.allclose(f, f4)):
             raise RuntimeError("Frequency grids from CSD calculations do not match")
-
-        if et == "H2":
-            # H2(ω) = G_yy / G_yu
-            H = Pyy / (Pyu + eps)
-        else:
-            # Hv(ω) = (G_yu/|G_yu|) * sqrt(G_yy/G_uu)
-            phase = Puy / (np.abs(Puy) + eps)
-            H = phase * np.sqrt((Pyy + eps) / (Puu + eps))
+        H = compute_frf_from_averaged_spectra(
+            Puy,
+            Puu,
+            Pyy=Pyy,
+            Pyu=Pyu,
+            estimator_type=et,
+        )
     return f, H
 
 # =============================================================================

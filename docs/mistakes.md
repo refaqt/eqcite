@@ -82,3 +82,10 @@ Log errors, wrong approaches, and **prevention rules** so agents and humans do n
 **Fix applied:** Continued by directly exploring the codebase and executing tasks in parallel where possible.
 **Prevention rule:** Never use idle waiting while unblocked; if background work is running, proceed with independent exploration/implementation steps.
 **Affected files:** None (process only)
+
+## Inserted new GUI class inside existing class scope — 2026-05-20
+**What happened:** While adding the FRF Compare page, I inserted `FrfComparePage` before `FrfResultsPage` finished, causing later FRF methods to bind to the wrong class and fail at runtime (`AttributeError` on `_plot_*` / `_compute_directional`).
+**Root cause:** Large class edit in `frf.py` was applied without verifying class-scope boundaries after insertion.
+**Fix applied:** Moved `_CompareEntry`/`FrfComparePage` below `FrfResultsPage` completion so method ownership is restored; verified with lints, tests, and class-method presence checks.
+**Prevention rule:** After inserting a new class into a large module, immediately verify ownership of neighboring methods (grep for `class ...` boundaries and run a runtime `hasattr` smoke check for critical methods).
+**Affected files:** `src/gui/pages/frf.py`
