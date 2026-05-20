@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
+from typing import Callable, List
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
@@ -24,6 +25,7 @@ class AnalysisTab(QWidget):
         self._analysis_type: AnalysisType = analysis_type
         self._title = "Untitled"
         self._analysis_folder: Optional[Path] = None
+        self._open_frf_tabs_provider: Optional[Callable[[], List["AnalysisTab"]]] = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -66,6 +68,25 @@ class AnalysisTab(QWidget):
             self._frf_root.set_default_load_dir(path)
         if self._stab_root is not None:
             self._stab_root.set_default_load_dir(path)
+
+    def set_open_frf_tabs_provider(self, provider: Callable[[], List["AnalysisTab"]]) -> None:
+        """
+        Injected by the workspace: lets FRF Compare enumerate all open FRF analysis tabs.
+        """
+        self._open_frf_tabs_provider = provider
+        if self._frf_root is not None:
+            self._frf_root.set_open_frf_tabs_provider(lambda: list(provider() or []))
+
+    def get_frf_results_page(self) -> object | None:
+        """
+        For cross-tab Compare: return the FRF Results page object (or None).
+        """
+        if self._frf_root is None:
+            return None
+        try:
+            return getattr(self._frf_root, "_page_results", None)
+        except Exception:
+            return None
 
     def apply_default_experiment_config(self, cfg: dict) -> None:
         if self._frf_root is None:
@@ -191,6 +212,9 @@ class AnalysisWorkspace(QWidget):
         self._wire_tab(tab)
         idx = self._tabs.addTab(tab, title)
         tab.set_title(title)
+        # For FRF tabs, provide a live view of open FRF tabs in this workspace.
+        if self._analysis_type == "frf":
+            tab.set_open_frf_tabs_provider(self.open_tabs)
         if select:
             self._tabs.setCurrentIndex(idx)
         return tab
@@ -198,6 +222,14 @@ class AnalysisWorkspace(QWidget):
     def active_tab(self) -> AnalysisTab | None:
         widget = self._tabs.currentWidget()
         return widget if isinstance(widget, AnalysisTab) else None
+
+    def open_tabs(self) -> List[AnalysisTab]:
+        out: List[AnalysisTab] = []
+        for i in range(self._tabs.count()):
+            w = self._tabs.widget(i)
+            if isinstance(w, AnalysisTab):
+                out.append(w)
+        return out
 
     def set_tab_title(self, tab: AnalysisTab, title: str) -> None:
         tab.set_title(title)
