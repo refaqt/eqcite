@@ -20,7 +20,13 @@ class AnalysisTab(QWidget):
     default_experiment_config_save_requested = Signal(dict)
     default_filtering_save_requested = Signal(dict)
 
-    def __init__(self, analysis_type: AnalysisType, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        analysis_type: AnalysisType,
+        parent: QWidget | None = None,
+        *,
+        shared_compare_entries: Optional[list[object]] = None,
+    ) -> None:
         super().__init__(parent)
         self._analysis_type: AnalysisType = analysis_type
         self._title = "Untitled"
@@ -36,7 +42,7 @@ class AnalysisTab(QWidget):
             self._stab_root.file_path_changed.connect(self.file_path_changed)
             layout.addWidget(self._stab_root, 1)
         else:
-            self._frf_root = FrfRootPage()
+            self._frf_root = FrfRootPage(compare_entries_shared=shared_compare_entries)
             self._stab_root = None
             self._frf_root.file_paths_changed.connect(self.file_paths_changed)
             self._frf_root.default_experiment_config_save_requested.connect(
@@ -192,6 +198,9 @@ class AnalysisWorkspace(QWidget):
     def __init__(self, analysis_type: AnalysisType, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._analysis_type = analysis_type
+        self._shared_compare_entries: Optional[list[object]] = (
+            [] if analysis_type == "frf" else None
+        )
         self._tabs = QTabWidget()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -208,7 +217,11 @@ class AnalysisWorkspace(QWidget):
         tab.default_filtering_save_requested.connect(self.default_filtering_save_requested)
 
     def add_empty_tab(self, *, title: str = "Untitled", select: bool = True) -> AnalysisTab:
-        tab = AnalysisTab(self._analysis_type, self)
+        tab = AnalysisTab(
+            self._analysis_type,
+            self,
+            shared_compare_entries=self._shared_compare_entries,
+        )
         self._wire_tab(tab)
         idx = self._tabs.addTab(tab, title)
         tab.set_title(title)

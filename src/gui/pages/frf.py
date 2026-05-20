@@ -132,7 +132,7 @@ class FrfRootPage(QWidget):
     default_filtering_save_requested = Signal(dict)
     file_paths_changed = Signal(object, object)  # (x_paths, y_paths) where each is List[str]
 
-    def __init__(self) -> None:
+    def __init__(self, *, compare_entries_shared: Optional[List[_CompareEntry]] = None) -> None:
         super().__init__()
 
         self._menu = QListWidget()
@@ -162,6 +162,7 @@ class FrfRootPage(QWidget):
         )
         self._page_compare = FrfComparePage(
             open_frf_tabs_provider=lambda: [],
+            entries_shared=compare_entries_shared,
         )
 
         self._page_sensor.default_save_requested.connect(self.default_experiment_config_save_requested)
@@ -2314,10 +2315,17 @@ class FrfComparePage(QWidget):
     Allows overlaying compliance results (displacement/force) from any open FRF analysis tab.
     """
 
-    def __init__(self, *, open_frf_tabs_provider: Callable[[], List[object]]) -> None:
+    def __init__(
+        self,
+        *,
+        open_frf_tabs_provider: Callable[[], List[object]],
+        entries_shared: Optional[List[_CompareEntry]] = None,
+    ) -> None:
         super().__init__()
         self._open_frf_tabs_provider: Callable[[], List[object]] = open_frf_tabs_provider
-        self._entries: List[_CompareEntry] = []
+        self._entries: List[_CompareEntry] = (
+            entries_shared if entries_shared is not None else []
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2406,8 +2414,10 @@ class FrfComparePage(QWidget):
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
-        # Keep the tab list reasonably fresh when users navigate here.
+        # Keep source tabs fresh and mirror shared compare entries.
         self._refresh_sources()
+        self._rebuild_entry_list()
+        self._redraw()
 
     def _open_frf_tabs(self) -> List[object]:
         try:
@@ -2556,7 +2566,7 @@ class FrfComparePage(QWidget):
             return
         if chosen == act_rm:
             ent = it.data(Qt.ItemDataRole.UserRole)
-            self._entries = [e for e in self._entries if e is not ent]
+            self._entries[:] = [e for e in self._entries if e is not ent]
             self._rebuild_entry_list()
             self._redraw()
 
