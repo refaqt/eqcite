@@ -157,6 +157,89 @@ def remove_bias_window(
     return signal - bias, min_var_idx, window_size
 
 
+def quiet_regions_mask(
+    time_data: np.ndarray,
+    impact_start_s: float,
+    ringdown_end_s: float,
+) -> np.ndarray:
+    """
+    Build boolean mask for quiet regions used in trend estimation.
+
+    Quiet data is defined as:
+      - pre-impact: t < impact_start_s
+      - post-ringdown: t > ringdown_end_s
+    """
+    time = np.asarray(time_data, dtype=float)
+    if time.ndim != 1:
+        raise ValueError("time must be a one-dimensional array")
+    if len(time) == 0:
+        raise ValueError("time must contain at least one sample")
+
+    t_impact = float(impact_start_s)
+    t_ringdown = float(ringdown_end_s)
+    if not np.isfinite(t_impact) or not np.isfinite(t_ringdown):
+        raise ValueError("impact_start_s and ringdown_end_s must be finite numbers")
+    if t_ringdown <= t_impact:
+        raise ValueError("ringdown_end_s must be greater than impact_start_s")
+
+    pre_mask = time < t_impact
+    post_mask = time > t_ringdown
+    if not np.any(pre_mask):
+        raise ValueError("No pre-impact quiet samples found before impact_start_s")
+    if not np.any(post_mask):
+        raise ValueError("No post-ringdown quiet samples found after ringdown_end_s")
+    return np.logical_or(pre_mask, post_mask)
+
+
+def detrend_quiet_regions(
+    time_data: np.ndarray,
+    signal_data: np.ndarray,
+    impact_start_s: float,
+    ringdown_end_s: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Fit linear trend on quiet regions and subtract it over the full signal.
+    """
+    time = np.asarray(time_data, dtype=float)
+    signal = np.asarray(signal_data, dtype=float)
+    if time.ndim != 1 or signal.ndim != 1:
+        raise ValueError("time and signal must be one-dimensional arrays")
+    if len(time) != len(signal):
+        raise ValueError("time and signal must have the same length")
+    if len(time) < 2:
+        raise ValueError("At least two samples are required for detrending")
+    if not np.all(np.isfinite(time)):
+        raise ValueError("time contains non-finite values")
+    if not np.all(np.isfinite(signal)):
+        raise ValueError("signal contains non-finite values")
+
+    mask = quiet_regions_mask(time, impact_start_s, ringdown_end_s)
+    quiet_t = time[mask]
+    quiet_signal = signal[mask]
+    if len(quiet_t) < 2:
+        raise ValueError("At least two quiet samples are required to fit a linear trend")
+
+    coeffs = np.polyfit(quiet_t, quiet_signal, deg=1)
+    trend = np.polyval(coeffs, time)
+    return signal - trend, trend
+
+
+def calculate_noise_power_from_mask(signal_data: np.ndarray, mask: np.ndarray) -> float:
+    """
+    Noise variance over masked samples (population variance, ddof=0).
+    """
+    data = np.asarray(signal_data, dtype=float)
+    m = np.asarray(mask, dtype=bool)
+    if data.ndim != 1:
+        raise ValueError("signal_data must be one-dimensional")
+    if m.ndim != 1 or len(m) != len(data):
+        raise ValueError("mask must be one-dimensional and match signal length")
+    if not np.any(m):
+        raise ValueError("mask must select at least one sample")
+    window = data[m]
+    return float(np.var(window, ddof=0))
+
+
 def calculate_noise_power_from_window(
     signal_data: np.ndarray,
     window_start_idx: int,

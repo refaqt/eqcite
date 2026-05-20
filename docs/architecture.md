@@ -54,7 +54,7 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
   - `src/gui/persistence.py`: save/load `analysis.json` + app settings (`config/app_settings.json`)
   - `src/gui/analysis_export.py`: FRF/stability CSV + PNG export and CSV hydrate helpers
   - `src/gui/plot_widgets.py`: Matplotlib embedding for result tabs
-- **FRF filtering / analysis** (`src/gui/pages/frf.py` → `FrfFilteringPage`): **`bias_window_size`** (samples) configures sliding min-variance bias removal and the noise-variance segment; per-axis **filter chains** apply **optional Wiener** to force (`u`) and response before windowing; **`filtering.params.wiener.mysize`** configures SciPy’s local Wiener window only. Both are persisted in the experiment snapshot (`experiment_cfg`), with `bias_window_size` also duplicated at the top level of `analysis.json` for readability.
+- **FRF filtering / analysis** (`src/gui/pages/frf.py` → `FrfFilteringPage`): per-signal **linear detrend** is estimated from two quiet regions (before impact and after ringdown) with separate force/response timing fields under `filtering.trend_estimation`; per-axis **filter chains** apply **optional Wiener** to force (`u`) and response after detrending and before windowing; **`filtering.params.wiener.mysize`** configures SciPy’s local Wiener window.
 - **FRF results tabs** (`src/gui/pages/frf.py`):
   - `Raw signals (mosaic)`: plots raw channels A0..A7 (per direction when available)
   - `Time signals (processing steps)`: plot with per-direction measurement selection + Force/Response selector, and **clickable legend toggles** for raw/bias/window/windowed/filtered traces
@@ -80,7 +80,7 @@ Python tooling for **frequency response (FRF) estimation** and **stability / cha
 ### FRF analysis settings
 
 - In the FRF GUI (`src/gui/pages/frf.py`), the sidebar page **Experiment configuration** defines sensors, mapping, expressions, and **per-direction** analysis I/O (force-only inputs, acceleration-only outputs). The page **Analysis settings** contains:
-  - **Filtering**: bias removal, then optional **Wiener** on force and/or response (independent chains), then windowing (applied before FRF estimation).
+  - **Filtering**: quiet-region linear detrend (force/response configured separately), then optional **Wiener** on force and/or response (independent chains), then windowing (applied before FRF estimation).
   - **Raised-cosine windowing** (Analysis settings): peak-relative **rolloff time**, **window max start**, and **window max end** define the plateau and cosine ramps; legacy `window_pre_seconds` / `window_post_seconds` / `window_beta` are migrated on load.
   - **Estimation**: FRF estimator selection (`H1`, `H2`, `Hv`, default `Hv`), passed into `src/frf_estimation.py::compute_frf_from_signals()` via `params['estimator_type']`.
 

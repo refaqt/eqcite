@@ -27,8 +27,8 @@ class _Step:
 class _Proc:
     def __init__(self) -> None:
         self.time = np.linspace(0.0, 1.0, 5)
-        self.u_steps = [_Step("raw", np.ones(5)), _Step("bias_corrected", np.ones(5) * 0.9)]
-        self.resp_steps = [_Step("raw", np.ones(5) * 2.0), _Step("bias_corrected", np.ones(5) * 1.8)]
+        self.u_steps = [_Step("raw", np.ones(5)), _Step("detrended", np.ones(5) * 0.9)]
+        self.resp_steps = [_Step("raw", np.ones(5) * 2.0), _Step("detrended", np.ones(5) * 1.8)]
         self.coherence_uy = np.linspace(0.0, 1.0, 4)
         self.f_hz = np.linspace(1.0, 4.0, 4)
         self.psd_u = np.linspace(0.1, 0.4, 4)
