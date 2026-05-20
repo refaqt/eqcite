@@ -89,3 +89,10 @@ Log errors, wrong approaches, and **prevention rules** so agents and humans do n
 **Fix applied:** Moved `_CompareEntry`/`FrfComparePage` below `FrfResultsPage` completion so method ownership is restored; verified with lints, tests, and class-method presence checks.
 **Prevention rule:** After inserting a new class into a large module, immediately verify ownership of neighboring methods (grep for `class ...` boundaries and run a runtime `hasattr` smoke check for critical methods).
 **Affected files:** `src/gui/pages/frf.py`
+
+## Recursive filtering signal emission loop — 2026-05-20
+**What happened:** Targeted tests crashed with an access violation after repeatedly recursing through `FrfFilteringPage._emit_filtering_changed()` and `build_filtering_cfg()`.
+**Root cause:** `build_filtering_cfg()` called `_refresh_preview()`, which emits `filtering_changed`, which called `build_filtering_cfg()` again.
+**Fix applied:** Removed side effects from `build_filtering_cfg()` so it only returns config data and no longer triggers preview/signal updates.
+**Prevention rule:** Keep `build_*` data-construction methods side-effect free; never emit Qt signals from inside a function that is also used by signal emitters.
+**Affected files:** `src/gui/pages/frf.py`

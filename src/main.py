@@ -46,20 +46,18 @@ def run_frf_pipeline(exp_cfg_path: Path, sens_path: Path) -> None:
         sens = load_data.load_sensitivities(sens_path)
 
     params = frf_estimation.get_system_parameters()
+    filtering_cfg = exp_cfg.get("filtering") if isinstance(exp_cfg.get("filtering"), dict) else None
     if isinstance(exp_cfg, dict):
-        if "bias_window_size" in exp_cfg:
-            params["bias_window_size"] = int(exp_cfg["bias_window_size"])
         if "wiener_mysize" in exp_cfg:
             params["wiener_mysize"] = int(exp_cfg["wiener_mysize"])
-        filt = exp_cfg.get("filtering")
-        if isinstance(filt, dict):
-            if "bias_window_size" in filt:
-                params["bias_window_size"] = int(filt["bias_window_size"])
-            fp = filt.get("params")
+        if filtering_cfg is not None:
+            fp = filtering_cfg.get("params")
             if isinstance(fp, dict):
                 w = fp.get("wiener")
                 if isinstance(w, dict) and "mysize" in w:
                     params["wiener_mysize"] = int(w["mysize"])
+            if "estimator_type" in filtering_cfg:
+                params["estimator_type"] = str(filtering_cfg.get("estimator_type") or "Hv")
 
     directional = load_data.load_directional_data(exp_cfg, sens)
     data_source = exp_cfg.get("data_source", "file")
@@ -110,8 +108,19 @@ def run_frf_pipeline(exp_cfg_path: Path, sens_path: Path) -> None:
 
             u = np.asarray(data[input_name])
             y = np.asarray(data[output_name])
+            local_params = dict(params)
+            if filtering_cfg is not None:
+                from .gui.pages.frf import apply_frf_filtering_and_windowing
 
-            f, H = frf_estimation.compute_frf_from_signals(time, u, y, params)
+                u, y, local_params = apply_frf_filtering_and_windowing(
+                    time=time,
+                    u=u,
+                    resp=y,
+                    params=local_params,
+                    filtering_cfg=filtering_cfg,
+                )
+
+            f, H = frf_estimation.compute_frf_from_signals(time, u, y, local_params)
             print(
                 f"Computed x FRF for {input_name} -> {output_name} over {len(f)} frequency bins."
             )
@@ -146,8 +155,19 @@ def run_frf_pipeline(exp_cfg_path: Path, sens_path: Path) -> None:
 
             u = np.asarray(data[input_name])
             y = np.asarray(data[output_name])
+            local_params = dict(params)
+            if filtering_cfg is not None:
+                from .gui.pages.frf import apply_frf_filtering_and_windowing
 
-            f, H = frf_estimation.compute_frf_from_signals(time, u, y, params)
+                u, y, local_params = apply_frf_filtering_and_windowing(
+                    time=time,
+                    u=u,
+                    resp=y,
+                    params=local_params,
+                    filtering_cfg=filtering_cfg,
+                )
+
+            f, H = frf_estimation.compute_frf_from_signals(time, u, y, local_params)
             print(
                 f"Computed y FRF for {input_name} -> {output_name} over {len(f)} frequency bins."
             )

@@ -187,14 +187,14 @@ f_hz, H_accel, H_disp = frf_estimation.average_frf_from_processing(procs, estima
 
 ---
 
-## Wiener + bias (FRF GUI and shared `signal_processing`)
-**When to use:** You touch Wiener filtering, bias removal, or FRF filtering config (GUI chains are Wiener-only; legacy Savitzky–Golay keys in saved JSON are ignored).
+## Wiener + quiet-region detrend (FRF GUI and shared `signal_processing`)
+**When to use:** You touch Wiener filtering, detrending, or FRF filtering config (GUI chains are Wiener-only; legacy Savitzky–Golay keys in saved JSON are ignored).
 **Pattern:**
-- Bias / quiet segment: `remove_bias_window(x, bias_window_size)` → use returned index and length with `calculate_noise_power_from_window` on the **same** bias-corrected array passed to `apply_wiener_filter_legacy`.
-- Noise statistic: `calculate_noise_power_from_window` = segment variance (`ddof=0`), not `mean(x**2)`.
-- SciPy window: `apply_wiener_filter_legacy(..., mysize)` with `mysize` independent of `bias_window_size` (coerced odd internally).
-**Gotchas:** Missing `filtering.params.wiener.mysize` or `bias_window_size` in the GUI filtering dict raises at compute time by design.
-**Last used:** 2026-05-12 (Savitzky–Golay removed from analysis/GUI)
+- Detrend: `detrend_quiet_regions(time, x, impact_start_s, ringdown_end_s)` where quiet samples are `t < impact_start_s` and `t > ringdown_end_s`.
+- Quiet mask for Wiener noise: `quiet_regions_mask(...)` and `calculate_noise_power_from_mask(...)` on the same detrended signal being filtered.
+- SciPy window: `apply_wiener_filter_legacy(..., mysize)` with `mysize` independent of trend-estimation timing (coerced odd internally).
+**Gotchas:** Missing `filtering.params.wiener.mysize` or missing/invalid `filtering.trend_estimation.{force,response}` bounds raises at compute time by design.
+**Last used:** 2026-05-20 (linear detrend replaced bias-window correction)
 
 ---
 

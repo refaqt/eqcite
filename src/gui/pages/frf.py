@@ -52,6 +52,28 @@ def _required_wiener_mysize(filt_params: Dict[str, Any]) -> int:
     return m
 
 
+def _required_trend_estimation(
+    filtering_cfg: Dict[str, Any],
+    signal_key: str,
+) -> Tuple[float, float]:
+    trend = filtering_cfg.get("trend_estimation")
+    if not isinstance(trend, dict):
+        raise ValueError("filtering.trend_estimation is required")
+    signal_trend = trend.get(signal_key)
+    path = f"filtering.trend_estimation.{signal_key}"
+    if not isinstance(signal_trend, dict):
+        raise ValueError(f"{path} is required")
+    if "impact_start_s" not in signal_trend or "ringdown_end_s" not in signal_trend:
+        raise ValueError(f"{path}.impact_start_s and {path}.ringdown_end_s are required")
+    impact = float(signal_trend["impact_start_s"])
+    ringdown = float(signal_trend["ringdown_end_s"])
+    if not np.isfinite(impact) or not np.isfinite(ringdown):
+        raise ValueError(f"{path} values must be finite")
+    if ringdown <= impact:
+        raise ValueError(f"{path}.ringdown_end_s must be greater than impact_start_s")
+    return impact, ringdown
+
+
 def _strip_savgol_from_filtering_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Remove obsolete Savitzky–Golay chain steps and params from saved filtering dicts."""
     out = dict(cfg or {})
@@ -264,8 +286,6 @@ class FrfRootPage(QWidget):
         base = self._page_results._build_experiment_cfg()
         f_cfg = self._page_filtering.build_filtering_cfg()
         base["filtering"] = f_cfg
-        if "bias_window_size" in f_cfg:
-            base["bias_window_size"] = int(f_cfg["bias_window_size"])
         return experiment_config.experiment_cfg_for_snapshot(base)
 
     def apply_experiment_cfg(self, cfg: Dict[str, Any]) -> None:
@@ -287,8 +307,6 @@ class FrfRootPage(QWidget):
         if frag:
             self._page_sensor.apply_experiment_config(frag)
         filt = dict(cfg.get("filtering") or {})
-        if "bias_window_size" in cfg and "bias_window_size" not in filt:
-            filt["bias_window_size"] = cfg["bias_window_size"]
         if isinstance(filt, dict):
             self._page_filtering.apply_filtering_cfg(filt)
 
@@ -712,8 +730,14 @@ class FrfFilteringPage(QWidget):
         filt_form.setVerticalSpacing(8)
         filt_form.setHorizontalSpacing(10)
 
-        self._bias_window_size = QLineEdit("1000")
-        filt_form.addRow(QLabel("Bias window size (samples)"), self._bias_window_size)
+        self._trend_force_impact_start = QLineEdit("0.0")
+        self._trend_force_ringdown_end = QLineEdit("0.1")
+        self._trend_resp_impact_start = QLineEdit("0.0")
+        self._trend_resp_ringdown_end = QLineEdit("0.1")
+        filt_form.addRow(QLabel("Force trend estimation: impact start (s)"), self._trend_force_impact_start)
+        filt_form.addRow(QLabel("Force trend estimation: ringdown end (s)"), self._trend_force_ringdown_end)
+        filt_form.addRow(QLabel("Response trend estimation: impact start (s)"), self._trend_resp_impact_start)
+        filt_form.addRow(QLabel("Response trend estimation: ringdown end (s)"), self._trend_resp_ringdown_end)
 
         self._wiener_mysize = QLineEdit("1000")
         filt_form.addRow("Wiener local window / mysize (samples)", self._wiener_mysize)
@@ -804,7 +828,10 @@ class FrfFilteringPage(QWidget):
         self._refresh_preview()
 
         for w in [
-            self._bias_window_size,
+            self._trend_force_impact_start,
+            self._trend_force_ringdown_end,
+            self._trend_resp_impact_start,
+            self._trend_resp_ringdown_end,
             self._wiener_mysize,
             self._win_hann_width,
             self._win_rolloff,
@@ -890,7 +917,7 @@ class FrfFilteringPage(QWidget):
             return " → ".join(parts) if parts else "(no filters)"
 
         self._pipeline_preview.setText(
-            f"Pipeline: raw → bias → u:[{fmt(self._u_chain.get_chain())}] → resp:[{fmt(self._resp_chain.get_chain())}] → windowing"
+            f"Pipeline: raw → detrend → u:[{fmt(self._u_chain.get_chain())}] → resp:[{fmt(self._resp_chain.get_chain())}] → windowing"
         )
         self._emit_filtering_changed()
 
@@ -904,8 +931,6 @@ class FrfFilteringPage(QWidget):
         self.default_save_requested.emit(self.build_filtering_cfg())
 
     def build_filtering_cfg(self) -> Dict[str, Any]:
-        self._refresh_preview()
-
         def i(txt: str) -> int:
             return int(float((txt or "").strip() or "0") or 0)
 
@@ -913,8 +938,17 @@ class FrfFilteringPage(QWidget):
             return float((txt or "").strip() or "0")
 
         return {
-            "bias_window_size": i(self._bias_window_size.text()),
             "estimator_type": str(self._estimator_type.currentData() or "Hv"),
+            "trend_estimation": {
+                "force": {
+                    "impact_start_s": f(self._trend_force_impact_start.text()),
+                    "ringdown_end_s": f(self._trend_force_ringdown_end.text()),
+                },
+                "response": {
+                    "impact_start_s": f(self._trend_resp_impact_start.text()),
+                    "ringdown_end_s": f(self._trend_resp_ringdown_end.text()),
+                },
+            },
             "u_chain": self._u_chain.get_chain(),
             "resp_chain": self._resp_chain.get_chain(),
             "params": {
@@ -937,8 +971,6 @@ class FrfFilteringPage(QWidget):
 
     def apply_filtering_cfg(self, cfg: Dict[str, Any]) -> None:
         cfg = _strip_savgol_from_filtering_cfg(dict(cfg or {}))
-        if "bias_window_size" in cfg:
-            self._bias_window_size.setText(str(int(cfg["bias_window_size"])))
 
         def _set_combo(cb: QComboBox, value: str) -> None:
             for idx in range(cb.count()):
@@ -959,6 +991,21 @@ class FrfFilteringPage(QWidget):
             self._u_chain.set_chain(cfg.get("u_chain") or [])
         if isinstance(cfg.get("resp_chain"), list):
             self._resp_chain.set_chain(cfg.get("resp_chain") or [])
+
+        trend = cfg.get("trend_estimation")
+        if isinstance(trend, dict):
+            force = trend.get("force")
+            if isinstance(force, dict):
+                if "impact_start_s" in force:
+                    self._trend_force_impact_start.setText(str(force.get("impact_start_s")))
+                if "ringdown_end_s" in force:
+                    self._trend_force_ringdown_end.setText(str(force.get("ringdown_end_s")))
+            response = trend.get("response")
+            if isinstance(response, dict):
+                if "impact_start_s" in response:
+                    self._trend_resp_impact_start.setText(str(response.get("impact_start_s")))
+                if "ringdown_end_s" in response:
+                    self._trend_resp_ringdown_end.setText(str(response.get("ringdown_end_s")))
 
         params = cfg.get("params") or {}
         if isinstance(params, dict):
@@ -1619,8 +1666,6 @@ class FrfResultsPage(QWidget):
 
         params = frf_estimation.get_system_parameters()
         filtering = dict(self._filtering_cfg or {})
-        if "bias_window_size" in filtering:
-            params["bias_window_size"] = int(filtering["bias_window_size"])
         fp = filtering.get("params") if isinstance(filtering.get("params"), dict) else {}
         wn = fp.get("wiener") if isinstance(fp, dict) else None
         if isinstance(wn, dict) and "mysize" in wn:
@@ -1837,7 +1882,7 @@ class FrfResultsPage(QWidget):
         ax.set_xlabel("Time (s)")
 
         def add_steps(ax, t: np.ndarray, steps: List[_SignalStep], prefix: str) -> None:
-            default_visible = {"raw", "bias_corrected", "window", "windowed", "wiener"}
+            default_visible = {"raw", "detrended", "window", "windowed", "wiener"}
             for s in steps:
                 line = ax.plot(t, s.y, linewidth=1.0, label=f"{prefix}{s.name}")[0]
                 line.set_visible(s.name in default_visible)
@@ -2158,17 +2203,16 @@ class FrfResultsPage(QWidget):
         fs = 1.0 / dt
 
         filtering_cfg = dict(filtering_cfg or {})
-        if "bias_window_size" not in filtering_cfg:
-            raise ValueError("filtering configuration must include bias_window_size (samples)")
-        bias_n = int(filtering_cfg["bias_window_size"])
-        if bias_n <= 0:
-            raise ValueError("bias_window_size must be a positive integer")
+        u_impact, u_ringdown = _required_trend_estimation(filtering_cfg, "force")
+        r_impact, r_ringdown = _required_trend_estimation(filtering_cfg, "response")
+        u_mask = signal_processing.quiet_regions_mask(time, u_impact, u_ringdown)
+        r_mask = signal_processing.quiet_regions_mask(time, r_impact, r_ringdown)
 
-        u_bias, u_bias_idx, u_bias_actual = signal_processing.remove_bias_window(u, bias_n)
-        r_bias, r_bias_idx, r_bias_actual = signal_processing.remove_bias_window(resp, bias_n)
+        u_detrended, _u_trend = signal_processing.detrend_quiet_regions(time, u, u_impact, u_ringdown)
+        r_detrended, _r_trend = signal_processing.detrend_quiet_regions(time, resp, r_impact, r_ringdown)
 
-        u_steps: List[_SignalStep] = [_SignalStep("raw", u), _SignalStep("bias_corrected", u_bias)]
-        r_steps: List[_SignalStep] = [_SignalStep("raw", resp), _SignalStep("bias_corrected", r_bias)]
+        u_steps: List[_SignalStep] = [_SignalStep("raw", u), _SignalStep("detrended", u_detrended)]
+        r_steps: List[_SignalStep] = [_SignalStep("raw", resp), _SignalStep("detrended", r_detrended)]
 
         # Apply filter chains (pre-windowing) as configured.
         u_chain = filtering_cfg.get("u_chain") if isinstance(filtering_cfg.get("u_chain"), list) else []
@@ -2186,15 +2230,14 @@ class FrfResultsPage(QWidget):
                     continue
                 if nm == "wiener":
                     mysize = _required_wiener_mysize(filt_params)
-                    noise_idx = u_bias_idx if is_u else r_bias_idx
-                    noise_actual = u_bias_actual if is_u else r_bias_actual
-                    noise_pow = signal_processing.calculate_noise_power_from_window(x_cur, noise_idx, noise_actual)
+                    noise_mask = u_mask if is_u else r_mask
+                    noise_pow = signal_processing.calculate_noise_power_from_mask(x_cur, noise_mask)
                     x_cur = signal_processing.apply_wiener_filter_legacy(x_cur, noise_pow, mysize)
                     steps.append(_SignalStep("wiener", x_cur))
             return x_cur, steps
 
-        u_filtered, u_f_steps = _apply_chain(u_bias, u_chain, is_u=True)
-        r_filtered, r_f_steps = _apply_chain(r_bias, r_chain, is_u=False)
+        u_filtered, u_f_steps = _apply_chain(u_detrended, u_chain, is_u=True)
+        r_filtered, r_f_steps = _apply_chain(r_detrended, r_chain, is_u=False)
         u_steps.extend(u_f_steps)
         r_steps.extend(r_f_steps)
 
@@ -2228,7 +2271,7 @@ class FrfResultsPage(QWidget):
 
         # Welch grid diagnostics (force PSD + coherence between u and response)
         nperseg = int(params.get("welch_nperseg", 2048) or 2048)
-        nperseg = max(2, min(nperseg, len(u_bias), len(r_bias)))
+        nperseg = max(2, min(nperseg, len(u_detrended), len(r_detrended)))
         noverlap = int(params.get("welch_noverlap", nperseg // 2) or (nperseg // 2))
         noverlap = max(0, min(noverlap, nperseg - 1))
         welch_window = params.get("welch_window", "hamming")
@@ -2252,8 +2295,8 @@ class FrfResultsPage(QWidget):
         def _fft(x: np.ndarray) -> np.ndarray:
             return np.fft.rfft(np.asarray(x, dtype=float), n=fft_n)
 
-        # Always include raw, bias_corrected, windowed, and last filtered if present
-        pick_names = ["raw", "bias_corrected", "windowed"]
+        # Always include raw, detrended, windowed, and last filtered if present
+        pick_names = ["raw", "detrended", "windowed"]
         last_u = u_steps[-1].name if u_steps else "raw"
         last_r = r_steps[-1].name if r_steps else "raw"
         for nm in [last_u, last_r]:
@@ -2777,13 +2820,12 @@ def apply_frf_filtering_and_windowing(
 
     dt = float(time[1] - time[0])
 
-    if "bias_window_size" not in filtering_cfg:
-        raise ValueError("filtering configuration must include bias_window_size (samples)")
-    bias_n = int(filtering_cfg["bias_window_size"])
-    if bias_n <= 0:
-        raise ValueError("bias_window_size must be a positive integer")
-    u_bias, u_bias_idx, u_bias_actual = signal_processing.remove_bias_window(u, bias_n)
-    r_bias, r_bias_idx, r_bias_actual = signal_processing.remove_bias_window(resp, bias_n)
+    u_impact, u_ringdown = _required_trend_estimation(filtering_cfg, "force")
+    r_impact, r_ringdown = _required_trend_estimation(filtering_cfg, "response")
+    u_mask = signal_processing.quiet_regions_mask(time, u_impact, u_ringdown)
+    r_mask = signal_processing.quiet_regions_mask(time, r_impact, r_ringdown)
+    u_detrended, _u_trend = signal_processing.detrend_quiet_regions(time, u, u_impact, u_ringdown)
+    r_detrended, _r_trend = signal_processing.detrend_quiet_regions(time, resp, r_impact, r_ringdown)
 
     u_chain = filtering_cfg.get("u_chain") if isinstance(filtering_cfg.get("u_chain"), list) else []
     r_chain = filtering_cfg.get("resp_chain") if isinstance(filtering_cfg.get("resp_chain"), list) else []
@@ -2799,14 +2841,13 @@ def apply_frf_filtering_and_windowing(
                 continue
             if nm == "wiener":
                 mysize = _required_wiener_mysize(filt_params)
-                noise_idx = u_bias_idx if is_u else r_bias_idx
-                noise_actual = u_bias_actual if is_u else r_bias_actual
-                noise_pow = signal_processing.calculate_noise_power_from_window(x_cur, noise_idx, noise_actual)
+                noise_mask = u_mask if is_u else r_mask
+                noise_pow = signal_processing.calculate_noise_power_from_mask(x_cur, noise_mask)
                 x_cur = signal_processing.apply_wiener_filter_legacy(x_cur, noise_pow, mysize)
         return x_cur
 
-    u_filt = _apply_chain(u_bias, u_chain, is_u=True)
-    r_filt = _apply_chain(r_bias, r_chain, is_u=False)
+    u_filt = _apply_chain(u_detrended, u_chain, is_u=True)
+    r_filt = _apply_chain(r_detrended, r_chain, is_u=False)
 
     # Windowing overrides from filtering cfg
     win_over = filtering_cfg.get("windowing") if isinstance(filtering_cfg.get("windowing"), dict) else {}
