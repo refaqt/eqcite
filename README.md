@@ -1,4 +1,4 @@
-# cnc-frf-estimation
+# eqcite
 
 Python tooling for **frequency response (FRF) estimation** and **stability/chatter measurement** from time-series data, with both a **PySide6 GUI** and a **CLI-style entry point**.
 
