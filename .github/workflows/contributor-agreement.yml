@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2025-2026 Refaqt (BE 0804.145.539) and contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Copy this file to .github/workflows/contributor-agreement.yml in every Refaqt repository.
+# The source of truth is workflow-templates/ in refaqt/.github; keep this copy the same.
+# It runs the shared contributor agreement check from refaqt/.github.
+# Do not add steps that check out or run code from the pull request.
+
+name: Contributor agreement
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  statuses: write
+
+jobs:
+  check:
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request &&
+       (github.event.comment.body == 'recheck' ||
+        startsWith(github.event.comment.body, 'I have read the Refaqt Contributor Licence Agreement')))
+    uses: refaqt/.github/.github/workflows/cla.yml@main
+    secrets: inherit
