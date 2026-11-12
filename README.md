@@ -94,3 +94,8 @@ python -m unittest discover -s tests -p "test*.py" -v
 - `ValueError: Expected 8 or 9 columns`: CSV payload shape does not match loader expectations.
 - FRF pair/input-output selection errors: configured variable names do not exist in loaded signals.
 
+## Licence
+
+Copyright © 2025–2026 Refaqt (BE 0804.145.539) and contributors. Contributions are accepted under the [Refaqt Contributor Licence Agreement](https://github.com/refaqt/.github/blob/main/CLA.md).
+
+eqcite is licensed under the GNU General Public License version 3 (GPL-3.0). See [LICENSE](LICENSE).
